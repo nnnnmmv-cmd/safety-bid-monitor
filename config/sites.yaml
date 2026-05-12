@@ -1,0 +1,81 @@
+# 발주청(지자체·공공기관) 명부 + 모니터링 설정.
+# 한 항목 = 한 발주청. 영업 메타데이터(구분·홈체크·한시진·한주검·투찰진행 등) +
+# 크롤링 정보(URL·게시판 ID·셀렉터)를 함께 보관.
+#
+# 편집은 가능하면 대시보드의 📒 발주청 명부 / 🌐 사이트 관리 메뉴에서 하세요.
+# 직접 편집할 경우 들여쓰기를 정확히 맞춰야 합니다.
+#
+# 필드 설명:
+#   [공통]
+#     name                       : 사람이 알아볼 이름 (예: "안성시청-건축")
+#     enabled                    : true/false — false면 모니터링에서 제외 (명부 표시는 유지)
+#     region                     : 지역 태그 (예: "경기")
+#   [영업 메타데이터]
+#     category                   : "건축" / "토목" / "건축·토목"
+#     last_updated               : 명부 정보 갱신일 (YYYY-MM-DD)
+#     homecheck / hansijin / hanjugum : "O" / "X"
+#     bidding_status             : "진행" / "불가" / "보류"
+#     new_submission_date        : 신규제출일 (YYYY-MM-DD)
+#     period_start / period_end  : 등록기간 시작/종료 (YYYY-MM-DD)
+#     announce_planned_date      : 공고예정일 (YYYY-MM-DD)
+#     previous_announce_date     : 이전 공고일 (YYYY-MM-DD)
+#     previous_deadline          : 이전 마감일 (YYYY-MM-DD)
+#     under_100m_winner_method   : 1억원 미만 낙찰자 선정 방식 (자유 텍스트)
+#     note                       : 특이사항 (자유 텍스트)
+#   [크롤링 설정]
+#     adapter                    : "egov" 또는 "eminwon"
+#     base_url / list_url        : 게시판 도메인 / 목록 URL
+#     list_params                : GET 쿼리스트링 (예: bbsId)
+#     pagination                 : { param, max_pages }
+#     selectors                  : 표준 어댑터가 못 잡을 때만 명시
+
+sites:
+  # 예시 1) 모든 영업 필드 + 크롤링 설정 (실제 활성 사이트의 기본 형태)
+  - name: 예시-안성시청-건축
+    enabled: false              # 실제 사용 시 true
+    region: 경기
+    # 영업 메타데이터
+    category: 건축
+    last_updated: ""
+    homecheck: O
+    hansijin: O
+    hanjugum: X
+    bidding_status: 진행
+    new_submission_date: ""
+    period_start: ""
+    period_end: ""
+    announce_planned_date: ""
+    previous_announce_date: ""
+    previous_deadline: ""
+    under_100m_winner_method: ""
+    note: ""
+    # 크롤링 설정
+    adapter: egov
+    base_url: https://www.anseong.go.kr
+    list_url: https://www.anseong.go.kr/board/list.do
+    list_params:
+      bbsId: BBSMSTR_000000000045
+    pagination:
+      param: pageIndex
+      max_pages: 3
+
+  # 예시 2) 영업 명부만 (아직 자동화 안 함 — list_url 비움 + enabled=false)
+  - name: 예시-신안산선(넥스트레인)
+    enabled: false
+    region: 경기
+    category: 건축
+    homecheck: O
+    hansijin: X
+    hanjugum: X
+    bidding_status: ""
+    period_start: "2024-08-14"
+    period_end: "2025-08-13"
+    announce_planned_date: "2025-07-10"
+    previous_announce_date: "2024-07-10"
+    previous_deadline: "2024-07-31"
+    note: "26년 모집공고 없음"
+    adapter: egov
+    base_url: ""
+    list_url: ""
+    list_params: {}
+    pagination: {}

@@ -1,0 +1,19 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# 사용자 비밀번호 해시 — 절대 GitHub에 올리지 않음
+config/users.yaml
+
+# 런타임 데이터
+data/bids.db
+data/bids.db-journal
+data/snapshots/
+data/attachments/
+logs/
+
+# macOS / 빌드 결과물
+.DS_Store
+*.app/

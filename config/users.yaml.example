@@ -1,0 +1,15 @@
+# users.yaml 템플릿. 실제 운영 파일(`users.yaml`)은 git에 커밋하지 마세요 (비밀번호 해시 포함).
+#
+# 첫 실행 시 대시보드의 로그인 화면에서 admin 비밀번호를 직접 설정하면 자동으로 users.yaml이 생성됩니다.
+# CLI로 사용자 추가/변경하려면:
+#   python scripts/manage_user.py --add building1 --name "김건축" --role viewer --categories 건축,건축·토목
+#   python scripts/manage_user.py --set-password admin
+#   python scripts/manage_user.py --list
+
+users:
+  admin:
+    password_hash: ""  # 대시보드 첫 로그인 화면에서 설정
+    name: 관리자
+    email: nnnnmmv@gmail.com
+    role: admin
+    categories: [건축, 토목, 건축·토목]
