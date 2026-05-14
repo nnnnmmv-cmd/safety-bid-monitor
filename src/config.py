@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
 from dotenv import load_dotenv
 
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
@@ -13,7 +12,7 @@ CONFIG_DIR: Path = PROJECT_ROOT / "config"
 DATA_DIR: Path = PROJECT_ROOT / "data"
 LOG_DIR: Path = PROJECT_ROOT / "logs"
 SNAPSHOT_DIR: Path = DATA_DIR / "snapshots"
-DB_PATH: Path = DATA_DIR / "bids.db"
+DB_PATH: Path = DATA_DIR / "bids.db"  # 마이그레이션 후 사용 안 함 (백업용 보존)
 
 
 @dataclass
@@ -50,13 +49,12 @@ class SiteConfig:
     pagination: dict[str, Any] = field(default_factory=dict)
     region: str = ""
     enabled: bool = True
-    # 영업 메타데이터 — 크롤링 동작과는 무관, 알림 태그·대시보드 명부에 사용
-    category: str = ""  # "건축" / "토목" / "건축·토목"
-    last_updated: str = ""  # 명부 정보 갱신일 (YYYY-MM-DD)
-    homecheck: str = ""  # "O" / "X"
+    category: str = ""
+    last_updated: str = ""
+    homecheck: str = ""
     hansijin: str = ""
     hanjugum: str = ""
-    bidding_status: str = ""  # "진행" / "불가" / "보류"
+    bidding_status: str = ""
     new_submission_date: str = ""
     period_start: str = ""
     period_end: str = ""
@@ -113,8 +111,39 @@ def _load_slack() -> SlackConfig | None:
     )
 
 
+def _site_row_to_config(row: dict[str, Any]) -> SiteConfig:
+    return SiteConfig(
+        name=str(row.get("name") or ""),
+        adapter=str(row.get("adapter") or "egov"),
+        base_url=str(row.get("base_url") or "").rstrip("/"),
+        list_url=str(row.get("list_url") or ""),
+        list_params={str(k): str(v) for k, v in (row.get("list_params") or {}).items()},
+        selectors=dict(row.get("selectors") or {}),
+        pagination=dict(row.get("pagination") or {}),
+        region=str(row.get("region") or ""),
+        enabled=bool(row.get("enabled")),
+        category=str(row.get("category") or ""),
+        last_updated=str(row.get("last_updated") or ""),
+        homecheck=str(row.get("homecheck") or ""),
+        hansijin=str(row.get("hansijin") or ""),
+        hanjugum=str(row.get("hanjugum") or ""),
+        bidding_status=str(row.get("bidding_status") or ""),
+        new_submission_date=str(row.get("new_submission_date") or ""),
+        period_start=str(row.get("period_start") or ""),
+        period_end=str(row.get("period_end") or ""),
+        announce_planned_date=str(row.get("announce_planned_date") or ""),
+        previous_announce_date=str(row.get("previous_announce_date") or ""),
+        previous_deadline=str(row.get("previous_deadline") or ""),
+        under_100m_winner_method=str(row.get("under_100m_winner_method") or ""),
+        note=str(row.get("note") or ""),
+    )
+
+
 def load_config() -> AppConfig:
     load_dotenv(PROJECT_ROOT / ".env")
+
+    # 순환 import 방지 — 함수 안에서 import
+    from . import store
 
     smtp = _load_smtp()
     slack = _load_slack()
@@ -124,44 +153,16 @@ def load_config() -> AppConfig:
         http_timeout_sec=float(os.getenv("HTTP_TIMEOUT_SEC", "15")),
     )
 
-    sites_raw: dict[str, Any] = yaml.safe_load((CONFIG_DIR / "sites.yaml").read_text(encoding="utf-8")) or {}
-    sites: list[SiteConfig] = []
-    for entry in sites_raw.get("sites", []) or []:
-        if not entry.get("enabled", False):
-            continue
-        sites.append(
-            SiteConfig(
-                name=entry["name"],
-                adapter=entry["adapter"],
-                base_url=str(entry.get("base_url", "")).rstrip("/"),
-                list_url=str(entry.get("list_url", "")),
-                list_params={str(k): str(v) for k, v in (entry.get("list_params") or {}).items()},
-                selectors=dict(entry.get("selectors") or {}),
-                pagination=dict(entry.get("pagination") or {}),
-                region=entry.get("region", ""),
-                enabled=True,
-                category=str(entry.get("category", "") or ""),
-                last_updated=str(entry.get("last_updated", "") or ""),
-                homecheck=str(entry.get("homecheck", "") or ""),
-                hansijin=str(entry.get("hansijin", "") or ""),
-                hanjugum=str(entry.get("hanjugum", "") or ""),
-                bidding_status=str(entry.get("bidding_status", "") or ""),
-                new_submission_date=str(entry.get("new_submission_date", "") or ""),
-                period_start=str(entry.get("period_start", "") or ""),
-                period_end=str(entry.get("period_end", "") or ""),
-                announce_planned_date=str(entry.get("announce_planned_date", "") or ""),
-                previous_announce_date=str(entry.get("previous_announce_date", "") or ""),
-                previous_deadline=str(entry.get("previous_deadline", "") or ""),
-                under_100m_winner_method=str(entry.get("under_100m_winner_method", "") or ""),
-                note=str(entry.get("note", "") or ""),
-            )
-        )
+    site_rows = store.list_sites()
+    sites: list[SiteConfig] = [
+        _site_row_to_config(row) for row in site_rows if row.get("enabled")
+    ]
 
-    kw_raw: dict[str, Any] = yaml.safe_load((CONFIG_DIR / "keywords.yaml").read_text(encoding="utf-8")) or {}
+    kw = store.list_keywords()
     keywords = KeywordConfig(
-        include=list(kw_raw.get("include") or []),
-        exclude=list(kw_raw.get("exclude") or []),
-        require_match_in=list(kw_raw.get("require_match_in") or ["title"]),
+        include=kw.get("include", []),
+        exclude=kw.get("exclude", []),
+        require_match_in=kw.get("match_in", ["title", "body"]) or ["title", "body"],
     )
 
     return AppConfig(smtp=smtp, slack=slack, runtime=runtime, sites=sites, keywords=keywords)

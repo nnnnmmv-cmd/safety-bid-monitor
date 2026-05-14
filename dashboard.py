@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 import traceback
@@ -16,18 +15,19 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
-import yaml
-from dotenv import dotenv_values
+from dotenv import dotenv_values, load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# .env를 import 시점에 한 번만 — store가 환경변수 필요
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
+from src import store
 from src.auth import ALL_CATEGORIES, User, authenticate, has_password, list_users
-from src.config import CONFIG_DIR, DB_PATH, LOG_DIR, PROJECT_ROOT, load_config
-from src.notifier import notify_new_postings, render_slack, send_slack
+from src.config import LOG_DIR, PROJECT_ROOT, load_config
+from src.notifier import notify_new_postings
 
 ENV_PATH: Path = PROJECT_ROOT / ".env"
-SITES_PATH: Path = CONFIG_DIR / "sites.yaml"
-KEYWORDS_PATH: Path = CONFIG_DIR / "keywords.yaml"
 MONITOR_LOG: Path = LOG_DIR / "monitor.log"
 
 st.set_page_config(page_title="안전진단 입찰 모니터", layout="wide", page_icon="🛠")
@@ -86,37 +86,30 @@ if "user" not in st.session_state:
 user: User = st.session_state["user"]
 
 
-# ---------- 파일 I/O 헬퍼 ----------
+# ---------- 데이터 헬퍼 (Supabase) ----------
 
 def read_sites() -> list[dict[str, Any]]:
-    if not SITES_PATH.exists():
-        return []
-    raw = yaml.safe_load(SITES_PATH.read_text(encoding="utf-8")) or {}
-    return list(raw.get("sites") or [])
+    return store.list_sites()
 
 
 def write_sites(sites: list[dict[str, Any]]) -> None:
-    SITES_PATH.write_text(
-        yaml.safe_dump({"sites": sites}, allow_unicode=True, sort_keys=False, indent=2),
-        encoding="utf-8",
-    )
+    store.replace_all_sites(sites)
 
 
 def read_keywords() -> dict[str, list[str]]:
-    if not KEYWORDS_PATH.exists():
-        return {"include": [], "exclude": [], "require_match_in": ["title", "body"]}
-    raw = yaml.safe_load(KEYWORDS_PATH.read_text(encoding="utf-8")) or {}
+    kw = store.list_keywords()
     return {
-        "include": list(raw.get("include") or []),
-        "exclude": list(raw.get("exclude") or []),
-        "require_match_in": list(raw.get("require_match_in") or ["title", "body"]),
+        "include": kw.get("include", []),
+        "exclude": kw.get("exclude", []),
+        "require_match_in": kw.get("match_in", ["title", "body"]) or ["title", "body"],
     }
 
 
 def write_keywords(data: dict[str, list[str]]) -> None:
-    KEYWORDS_PATH.write_text(
-        yaml.safe_dump(data, allow_unicode=True, sort_keys=False, indent=2),
-        encoding="utf-8",
+    store.replace_keywords(
+        include=data.get("include", []),
+        exclude=data.get("exclude", []),
+        match_in=data.get("require_match_in", ["title", "body"]),
     )
 
 
@@ -151,25 +144,19 @@ def write_env(values: dict[str, str]) -> None:
     ENV_PATH.write_text("\n".join(output) + "\n", encoding="utf-8")
 
 
-def db_query(sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
-    if not DB_PATH.exists():
+def _matched_keywords_list(value: Any) -> list[str]:
+    """Supabase jsonb는 list로 오지만 옛 SQLite 데이터는 JSON 문자열일 수 있음."""
+    if value is None:
         return []
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        return list(conn.execute(sql, params).fetchall())
-    finally:
-        conn.close()
-
-
-def db_execute(sql: str, params: tuple[Any, ...] = ()) -> int:
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        cur = conn.execute(sql, params)
-        conn.commit()
-        return cur.rowcount
-    finally:
-        conn.close()
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return [str(v) for v in parsed] if isinstance(parsed, list) else []
+        except json.JSONDecodeError:
+            return []
+    return []
 
 
 # ---------- 사이드바 ----------
@@ -233,14 +220,14 @@ def page_bids() -> None:
     st.header("📋 수집된 공고")
 
     visible_site_names = {s.get("name") for s in visible_sites}
-    rows = db_query("SELECT * FROM bids ORDER BY posted_at DESC NULLS LAST LIMIT 500")
+    rows = store.fetch_recent_bids(limit=500)
     if user.role != "admin":
-        rows = [r for r in rows if r["site_name"] in visible_site_names]
+        rows = [r for r in rows if r.get("site_name") in visible_site_names]
     if not rows:
         st.info("아직 보실 수 있는 공고가 없습니다. **▶️ 수동 실행** 메뉴에서 한 번 돌려보세요." if user.role == "admin" else "본인 카테고리에 해당하는 공고가 아직 없습니다.")
         return
 
-    sites = sorted({r["site_name"] for r in rows if r["site_name"]})
+    sites = sorted({r["site_name"] for r in rows if r.get("site_name")})
     col_a, col_b, col_c = st.columns([2, 1, 1])
     with col_a:
         site_filter = st.multiselect("사이트", sites, default=[])
@@ -250,36 +237,27 @@ def page_bids() -> None:
         only_keyword = st.checkbox("키워드 매칭 있음만", value=False)
 
     filtered: list[dict[str, Any]] = []
-    for r in rows:
-        d = dict(r)
-        if site_filter and d["site_name"] not in site_filter:
+    for d in rows:
+        if site_filter and d.get("site_name") not in site_filter:
             continue
         if only_unnotified and d.get("notified"):
             continue
-        if only_keyword:
-            try:
-                kw = json.loads(d.get("matched_keywords") or "[]")
-            except json.JSONDecodeError:
-                kw = []
-            if not kw:
-                continue
+        if only_keyword and not _matched_keywords_list(d.get("matched_keywords")):
+            continue
         filtered.append(d)
 
     st.caption(f"총 {len(filtered)}건 표시 (DB 전체 {len(rows)}건)")
 
     table_data: list[dict[str, Any]] = []
     for d in filtered:
-        try:
-            kw = ", ".join(json.loads(d.get("matched_keywords") or "[]"))
-        except json.JSONDecodeError:
-            kw = ""
+        kw_text = ", ".join(_matched_keywords_list(d.get("matched_keywords")))
         table_data.append({
             "사이트": d.get("site_name"),
             "공고명": d.get("title"),
             "게시일": (d.get("posted_at") or "")[:10],
             "마감일": (d.get("deadline_at") or "")[:10],
             "추정가": d.get("estimated_price"),
-            "키워드": kw,
+            "키워드": kw_text,
             "알림": "✅" if d.get("notified") else "⏳",
             "링크": d.get("url"),
         })
@@ -298,17 +276,13 @@ def page_bids() -> None:
         with col1:
             if st.button("선택 사이트의 알림 상태 초기화 (재발송 대상으로)"):
                 if site_filter:
-                    placeholders = ",".join("?" * len(site_filter))
-                    n = db_execute(
-                        f"UPDATE bids SET notified=0 WHERE site_name IN ({placeholders})",
-                        tuple(site_filter),
-                    )
+                    n = store.reset_notified_for_sites(site_filter)
                     st.success(f"{n}건 초기화됨")
                 else:
                     st.warning("사이트 필터를 먼저 선택하세요.")
         with col2:
             if st.button("⚠️ 전체 공고 삭제 (테스트용)"):
-                n = db_execute("DELETE FROM bids")
+                n = store.delete_all_bids()
                 st.success(f"{n}건 삭제됨")
 
 

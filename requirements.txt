@@ -6,3 +6,4 @@ pyyaml>=6.0
 streamlit>=1.30
 bcrypt>=4.0
 pandas>=2.0
+supabase>=2.30
