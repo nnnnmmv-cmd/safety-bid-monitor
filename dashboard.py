@@ -303,6 +303,10 @@ ROSTER_COLUMNS: list[tuple[str, str]] = [
     ("previous_announce_date", "이전 공고일"),
     ("previous_deadline", "이전 마감일"),
     ("under_100m_winner_method", "(1억원 미만) 낙찰자 선정 방식"),
+    ("above_100m_winner_method", "(1억원 이상) 낙찰자 선정 방식"),
+    ("bid_submission_method", "입찰서 제출 방식"),
+    ("performance_proof", "실적증명"),
+    ("work_overlap_doc", "업무중첩도 확인서류"),
     ("note", "특이사항"),
     ("region", "지역"),
     ("crawl_status", "🔧"),
@@ -370,6 +374,10 @@ def page_roster() -> None:
             "previous_announce_date": _to_date(s.get("previous_announce_date")),
             "previous_deadline": _to_date(s.get("previous_deadline")),
             "under_100m_winner_method": s.get("under_100m_winner_method", "") or "",
+            "above_100m_winner_method": s.get("above_100m_winner_method", "") or "",
+            "bid_submission_method": s.get("bid_submission_method", "") or "",
+            "performance_proof": s.get("performance_proof", "") or "",
+            "work_overlap_doc": s.get("work_overlap_doc", "") or "",
             "note": s.get("note", "") or "",
             "region": s.get("region", "") or "",
             "crawl_status": "✓" if (s.get("base_url") and s.get("list_url")) else "—",
@@ -398,6 +406,10 @@ def page_roster() -> None:
         "previous_announce_date": st.column_config.DateColumn("이전 공고일", format="YYYY-MM-DD"),
         "previous_deadline": st.column_config.DateColumn("이전 마감일", format="YYYY-MM-DD"),
         "under_100m_winner_method": st.column_config.TextColumn("(1억원 미만) 낙찰자 선정 방식", width="medium"),
+        "above_100m_winner_method": st.column_config.TextColumn("(1억원 이상) 낙찰자 선정 방식", width="medium"),
+        "bid_submission_method": st.column_config.TextColumn("입찰서 제출 방식", width="medium"),
+        "performance_proof": st.column_config.TextColumn("실적증명", width="medium"),
+        "work_overlap_doc": st.column_config.TextColumn("업무중첩도 확인서류", width="medium"),
         "note": st.column_config.TextColumn("특이사항", width="large"),
         "region": st.column_config.TextColumn("지역", width="small"),
         "crawl_status": st.column_config.TextColumn(
@@ -442,6 +454,10 @@ def page_roster() -> None:
             base["previous_announce_date"] = _from_date(row.get("previous_announce_date"))
             base["previous_deadline"] = _from_date(row.get("previous_deadline"))
             base["under_100m_winner_method"] = str(row.get("under_100m_winner_method") or "")
+            base["above_100m_winner_method"] = str(row.get("above_100m_winner_method") or "")
+            base["bid_submission_method"] = str(row.get("bid_submission_method") or "")
+            base["performance_proof"] = str(row.get("performance_proof") or "")
+            base["work_overlap_doc"] = str(row.get("work_overlap_doc") or "")
             base["note"] = str(row.get("note") or "")
             # 신규 행의 기본 크롤링 골격
             base.setdefault("adapter", "egov")

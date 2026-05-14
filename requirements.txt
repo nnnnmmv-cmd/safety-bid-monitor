@@ -7,3 +7,4 @@ streamlit>=1.30
 bcrypt>=4.0
 pandas>=2.0
 supabase>=2.30
+openpyxl>=3.1

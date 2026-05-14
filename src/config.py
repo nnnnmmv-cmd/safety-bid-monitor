@@ -62,6 +62,10 @@ class SiteConfig:
     previous_announce_date: str = ""
     previous_deadline: str = ""
     under_100m_winner_method: str = ""
+    above_100m_winner_method: str = ""
+    bid_submission_method: str = ""
+    performance_proof: str = ""
+    work_overlap_doc: str = ""
     note: str = ""
 
 
@@ -135,6 +139,10 @@ def _site_row_to_config(row: dict[str, Any]) -> SiteConfig:
         previous_announce_date=str(row.get("previous_announce_date") or ""),
         previous_deadline=str(row.get("previous_deadline") or ""),
         under_100m_winner_method=str(row.get("under_100m_winner_method") or ""),
+        above_100m_winner_method=str(row.get("above_100m_winner_method") or ""),
+        bid_submission_method=str(row.get("bid_submission_method") or ""),
+        performance_proof=str(row.get("performance_proof") or ""),
+        work_overlap_doc=str(row.get("work_overlap_doc") or ""),
         note=str(row.get("note") or ""),
     )
 
