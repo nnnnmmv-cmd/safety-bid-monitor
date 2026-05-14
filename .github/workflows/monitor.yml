@@ -1,0 +1,58 @@
+name: monitor
+
+# UTC 기준 매시간 5분 (=KST 매시간 5분) + 수동 트리거 버튼
+on:
+  schedule:
+    - cron: '5 * * * *'
+  workflow_dispatch:
+
+# 동시 실행 방지 — 동일 워크플로가 겹치면 새 것이 옛 것을 cancel
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+jobs:
+  run-monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run monitor (src.monitor)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_ADMIN_WEBHOOK_URL: ${{ secrets.SLACK_ADMIN_WEBHOOK_URL }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
+          NOTIFY_TO: ${{ secrets.NOTIFY_TO }}
+          NOTIFY_ADMIN: ${{ secrets.NOTIFY_ADMIN }}
+          LOOKBACK_HOURS: ${{ secrets.LOOKBACK_HOURS }}
+          REQUEST_DELAY_SEC: ${{ secrets.REQUEST_DELAY_SEC }}
+          HTTP_TIMEOUT_SEC: ${{ secrets.HTTP_TIMEOUT_SEC }}
+          PYTHONUNBUFFERED: '1'
+        run: python -m src.monitor
+
+      - name: Upload monitor log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitor-log
+          path: logs/monitor.log
+          if-no-files-found: ignore
+          retention-days: 7
