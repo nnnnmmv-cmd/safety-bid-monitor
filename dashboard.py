@@ -172,7 +172,6 @@ st.sidebar.divider()
 ADMIN_PAGES: list[str] = [
     "📋 공고 목록",
     "📒 발주청 명부",
-    "🌐 사이트 관리",
     "🔍 키워드 관리",
     "🔔 알림 설정",
     "▶️ 수동 실행",
@@ -306,6 +305,7 @@ ROSTER_COLUMNS: list[tuple[str, str]] = [
     ("under_100m_winner_method", "(1억원 미만) 낙찰자 선정 방식"),
     ("note", "특이사항"),
     ("region", "지역"),
+    ("crawl_status", "🔧"),
     ("enabled", "모니터링"),
 ]
 
@@ -372,6 +372,7 @@ def page_roster() -> None:
             "under_100m_winner_method": s.get("under_100m_winner_method", "") or "",
             "note": s.get("note", "") or "",
             "region": s.get("region", "") or "",
+            "crawl_status": "✓" if (s.get("base_url") and s.get("list_url")) else "—",
             "enabled": bool(s.get("enabled", False)),
         })
 
@@ -399,6 +400,10 @@ def page_roster() -> None:
         "under_100m_winner_method": st.column_config.TextColumn("(1억원 미만) 낙찰자 선정 방식", width="medium"),
         "note": st.column_config.TextColumn("특이사항", width="large"),
         "region": st.column_config.TextColumn("지역", width="small"),
+        "crawl_status": st.column_config.TextColumn(
+            "🔧", disabled=True, width="small",
+            help="크롤링 URL 설정 여부 — ✓ 설정됨 / — 미설정. 아래 '크롤링 설정' 섹션에서 편집",
+        ),
         "enabled": st.column_config.CheckboxColumn("모니터링", help="체크 시 매시간 자동 수집"),
     }
 
@@ -453,121 +458,123 @@ def page_roster() -> None:
 
     with st.expander("ℹ 사용 팁"):
         st.markdown(
-            "- 새 행을 추가하려면 표 맨 아래의 **빈 행**에 직접 입력하면 됩니다. 행 삭제는 행 왼쪽 체크박스 선택 후 **휴지통** 아이콘.\n"
-            "- 자동 크롤링까지 원하면 저장 후 **🌐 사이트 관리** 메뉴에서 해당 발주청의 `base_url` / `list_url` / `list_params`를 입력하세요.\n"
+            "- 새 행을 추가하려면 표 맨 아래의 **빈 행**에 직접 입력하세요. 행 삭제는 행 왼쪽 체크박스 선택 후 **휴지통** 아이콘.\n"
+            "- 자동 크롤링까지 원하면 저장 후 **아래 🔧 크롤링 설정** 섹션에서 해당 발주청을 선택해 URL과 게시판 ID를 입력하세요.\n"
             "- `운영기간`은 시작일/종료일을 채우면 자동으로 계산됩니다.\n"
-            "- `모니터링`이 체크된 사이트만 매시간 자동 수집됩니다 (체크 안 된 항목은 명부에만 남음)."
+            "- `🔧` 컬럼이 `✓`면 크롤링 URL이 설정된 상태, `—`면 미설정.\n"
+            "- `모니터링`이 체크되고 🔧이 `✓`인 사이트만 매시간 자동 수집됩니다."
         )
 
-
-# ---------- 페이지: 사이트 관리 ----------
-
-def page_sites() -> None:
-    st.header("🌐 모니터링 사이트 관리")
-    st.caption("회사가 모니터링하고 싶은 발주청 게시판을 등록합니다. 변경 후 **저장** 버튼을 눌러야 반영됩니다.")
-
-    if "sites_buffer" not in st.session_state:
-        st.session_state.sites_buffer = read_sites()
-
-    sites: list[dict[str, Any]] = st.session_state.sites_buffer
-
-    col_a, col_b, col_c = st.columns([1, 1, 4])
-    with col_a:
-        if st.button("➕ 사이트 추가"):
-            sites.append({
-                "name": "",
-                "adapter": "egov",
-                "base_url": "",
-                "list_url": "",
-                "list_params": {},
-                "pagination": {"param": "pageIndex", "max_pages": 3},
-                "region": "",
-                "enabled": True,
-            })
-            st.rerun()
-    with col_b:
-        if st.button("🔄 파일에서 다시 읽기"):
-            st.session_state.sites_buffer = read_sites()
-            st.rerun()
-
-    for idx, site in enumerate(list(sites)):
-        with st.expander(
-            f"{'✅' if site.get('enabled') else '⏸'} {site.get('name') or '(이름 없음)'} — {site.get('adapter','')}",
-            expanded=not site.get("name"),
-        ):
-            c1, c2 = st.columns([3, 1])
-            site["name"] = c1.text_input("이름", value=site.get("name", ""), key=f"name_{idx}")
-            site["enabled"] = c2.checkbox("활성화", value=bool(site.get("enabled")), key=f"en_{idx}")
-
-            c1, c2 = st.columns(2)
-            site["adapter"] = c1.selectbox(
-                "어댑터",
-                ["egov", "eminwon"],
-                index=["egov", "eminwon"].index(site.get("adapter", "egov")) if site.get("adapter") in ("egov", "eminwon") else 0,
-                key=f"ad_{idx}",
-            )
-            site["region"] = c2.text_input("지역", value=site.get("region", ""), key=f"rg_{idx}")
-
-            site["base_url"] = st.text_input(
-                "base_url (도메인까지)",
-                value=site.get("base_url", ""),
-                help="예: https://www.example.go.kr",
-                key=f"base_{idx}",
-            )
-            site["list_url"] = st.text_input(
-                "list_url (게시판 목록 URL, ? 앞까지)",
-                value=site.get("list_url", ""),
-                help="예: https://www.example.go.kr/board/list.do",
-                key=f"list_{idx}",
-            )
-
-            params_text = "\n".join(f"{k}={v}" for k, v in (site.get("list_params") or {}).items())
-            new_params_text = st.text_area(
-                "list_params (한 줄에 키=값)",
-                value=params_text,
-                help="예: bbsId=BBSMSTR_000000000045",
-                height=80,
-                key=f"lp_{idx}",
-            )
-            parsed: dict[str, str] = {}
-            for line in new_params_text.splitlines():
-                line = line.strip()
-                if not line or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                parsed[k.strip()] = v.strip()
-            site["list_params"] = parsed
-
-            c1, c2 = st.columns(2)
-            site["pagination"]["param"] = c1.text_input(
-                "페이징 키", value=(site.get("pagination") or {}).get("param", "pageIndex"), key=f"pp_{idx}"
-            )
-            site["pagination"]["max_pages"] = c2.number_input(
-                "최대 페이지", min_value=1, max_value=20,
-                value=int((site.get("pagination") or {}).get("max_pages", 3)),
-                key=f"mp_{idx}",
-            )
-
-            sel_row = site.get("selectors") or {}
-            with st.expander("고급 셀렉터 (표준 어댑터가 못 잡을 때만 입력)"):
-                sel_row["row"] = st.text_input("row", value=sel_row.get("row", ""), key=f"sr_{idx}")
-                sel_row["title"] = st.text_input("title", value=sel_row.get("title", ""), key=f"st_{idx}")
-                sel_row["date"] = st.text_input("date", value=sel_row.get("date", ""), key=f"sd_{idx}")
-            cleaned_sel = {k: v for k, v in sel_row.items() if v}
-            if cleaned_sel:
-                site["selectors"] = cleaned_sel
-            elif "selectors" in site:
-                site.pop("selectors")
-
-            if st.button(f"🗑 이 사이트 삭제", key=f"del_{idx}"):
-                sites.pop(idx)
-                st.rerun()
-
+    # ===== 크롤링 설정 폼 (선택한 발주청 1개) =====
     st.divider()
-    c1, c2 = st.columns([1, 3])
-    if c1.button("💾 모두 저장", type="primary"):
-        write_sites(sites)
-        st.success(f"저장 완료 — 활성 {sum(1 for s in sites if s.get('enabled'))} / 전체 {len(sites)}")
+    st.subheader("🔧 크롤링 설정")
+    st.caption("표에서 발주청을 추가·저장한 뒤, 여기서 그 발주청의 URL/게시판 ID를 설정하면 자동 수집 대상이 됩니다.")
+
+    site_names = [s["name"] for s in sites if s.get("name")]
+    if not site_names:
+        st.info("발주청을 먼저 표에 추가하고 **💾 명부 저장**을 누르세요.")
+        return
+
+    if user.role != "admin":
+        st.info("크롤링 설정 편집은 관리자만 가능합니다.")
+        return
+
+    selected_name = st.selectbox("발주청 선택", site_names, key="crawl_target")
+    target = next((s for s in sites if s.get("name") == selected_name), None)
+    if target is None:
+        return
+
+    with st.form(f"crawl_form_{selected_name}"):
+        c1, c2 = st.columns(2)
+        adapter_opts = ["egov", "eminwon"]
+        cur_adapter = target.get("adapter", "egov")
+        adapter = c1.selectbox(
+            "어댑터",
+            adapter_opts,
+            index=adapter_opts.index(cur_adapter) if cur_adapter in adapter_opts else 0,
+            help="egov: 행정안전부 표준 게시판 (대다수). eminwon: 일부 시·도 자체 시스템.",
+        )
+        bbs_id = c2.text_input(
+            "bbsId (게시판 ID)",
+            value=str((target.get("list_params") or {}).get("bbsId", "")),
+            help="URL 쿼리스트링의 'bbsId=' 다음 값. 예: BBSMSTR_000000000045",
+        )
+
+        base_url = st.text_input(
+            "base_url (도메인까지)",
+            value=str(target.get("base_url") or ""),
+            placeholder="https://www.example.go.kr",
+        )
+        list_url = st.text_input(
+            "list_url (게시판 목록 URL, ? 앞까지)",
+            value=str(target.get("list_url") or ""),
+            placeholder="https://www.example.go.kr/board/list.do",
+        )
+
+        c1, c2 = st.columns(2)
+        page_param = c1.text_input(
+            "페이징 쿼리 키",
+            value=str((target.get("pagination") or {}).get("param", "pageIndex")),
+        )
+        max_pages = c2.number_input(
+            "최대 페이지 수",
+            min_value=1, max_value=20,
+            value=int((target.get("pagination") or {}).get("max_pages", 3)),
+        )
+
+        with st.expander("고급 셀렉터 (표준 어댑터가 파싱 못 할 때만)"):
+            sel = target.get("selectors") or {}
+            sel_row = st.text_input("row 셀렉터", value=str(sel.get("row", "")), placeholder="table.board_list tbody tr")
+            sel_title = st.text_input("title 셀렉터", value=str(sel.get("title", "")), placeholder="td.subject a")
+            sel_date = st.text_input("date 셀렉터", value=str(sel.get("date", "")), placeholder="td.date")
+
+        with st.expander("추가 list_params (bbsId 외에 더 필요한 GET 쿼리)"):
+            extra_params = {k: v for k, v in (target.get("list_params") or {}).items() if k != "bbsId"}
+            extra_text = st.text_area(
+                "한 줄에 키=값",
+                value="\n".join(f"{k}={v}" for k, v in extra_params.items()),
+                height=80,
+                placeholder="menuId=200",
+            )
+
+        submitted = st.form_submit_button("💾 크롤링 설정 저장", type="primary")
+
+    if submitted:
+        list_params: dict[str, str] = {}
+        for line in extra_text.splitlines():
+            line = line.strip()
+            if not line or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            list_params[k.strip()] = v.strip()
+        if bbs_id.strip():
+            list_params["bbsId"] = bbs_id.strip()
+
+        pagination = {
+            "param": (page_param or "pageIndex").strip(),
+            "max_pages": int(max_pages),
+        }
+
+        selectors = {k: v for k, v in {
+            "row": sel_row.strip(),
+            "title": sel_title.strip(),
+            "date": sel_date.strip(),
+        }.items() if v}
+
+        updated = dict(target)
+        updated["adapter"] = adapter
+        updated["base_url"] = base_url.strip().rstrip("/")
+        updated["list_url"] = list_url.strip()
+        updated["list_params"] = list_params
+        updated["pagination"] = pagination
+        if selectors:
+            updated["selectors"] = selectors
+        elif "selectors" in updated:
+            updated.pop("selectors")
+
+        store.upsert_sites([updated])
+        st.success(f"'{selected_name}' 크롤링 설정 저장 완료")
+        st.rerun()
 
 
 # ---------- 페이지: 키워드 ----------
@@ -805,8 +812,6 @@ if page == "📋 공고 목록":
     page_bids()
 elif page == "📒 발주청 명부":
     page_roster()
-elif page == "🌐 사이트 관리":
-    page_sites()
 elif page == "🔍 키워드 관리":
     page_keywords()
 elif page == "🔔 알림 설정":
