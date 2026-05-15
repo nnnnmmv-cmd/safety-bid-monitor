@@ -18,7 +18,14 @@ _DEFAULT_ROW_SELECTORS: list[str] = [
     "table.bbs_list tbody tr",
     "table.tbl_list tbody tr",
     "table.list tbody tr",
+    "table.brd_list tbody tr",
+    "table.tbl_board tbody tr",
+    "table.bbs_default_list tbody tr",
+    "table.p-table tbody tr",
     "table tbody tr",
+    "table#boardList tr",
+    "table.tb_basic tr",
+    "tbody.list tr",
     "ul.board_list li",
     "div.board_list ul li",
 ]
@@ -109,19 +116,26 @@ class EgovAdapter(Adapter):
 
         title = link.get_text(strip=True)
         href_attr = self.site.selectors.get("detail_url_attr", "href")
-        href_value = link.get(href_attr) or link.get("href") or ""
+        href_value = link.get(href_attr) or link.get("href") or link.get("onclick") or ""
         href = str(href_value).strip()
 
-        if href.startswith("javascript:"):
-            m = re.search(r"'([^']+)'|\"([^\"]+)\"", href)
+        if href.startswith("javascript:") or "javascript:" in href:
+            # javascript:fn_view('12345') 또는 javascript:goView(12345) 같은 패턴에서 인자 추출
+            m = re.search(r"['\"]([^'\"]+)['\"]|\((\d+)\)", href)
+            token = ""
             if m:
                 token = m.group(1) or m.group(2) or ""
-                if token.startswith("http") or token.startswith("/"):
-                    href = token
-                else:
-                    href = ""
+            if token.startswith("http") or token.startswith("/"):
+                href = token
+            else:
+                href = ""  # 상세 URL 못 만들면 list_url로 폴백
         if href and not href.startswith("http"):
-            href = urljoin(self.site.base_url + "/", href)
+            # list_url(있으면) 기준으로 합쳐서 상대경로 ./xxx 가 정확히 디렉토리 기준이 되게
+            base_for_join = self.site.list_url or (self.site.base_url + "/")
+            href = urljoin(base_for_join, href)
+        # 상세 URL 추출 실패 시 list_url(게시판 페이지)로 폴백 — 메인 페이지로 가는 것 방지
+        if not href:
+            href = self.site.list_url or self.site.base_url
         return title, href
 
     def _extract_date(self, row: Tag) -> datetime | None:
