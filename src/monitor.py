@@ -26,38 +26,46 @@ def _setup_logging() -> None:
 
 
 def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[int, int, str | None]:
-    """returns (fetched, inserted, error_message)"""
+    """returns (fetched, inserted, error_message). 한 사이트 실패가 전체 run을 망치지 않도록 전체를 격리."""
     try:
         adapter = build_adapter(site, cfg.runtime)
         postings = adapter.fetch(since)
     except Exception as exc:
         logger.exception("[%s] adapter failed", site.name)
-        return 0, 0, f"{site.name}: {exc}"
+        return 0, 0, f"{site.name} fetch: {exc}"
 
     inserted = 0
     fetched_at = utc_now_iso()
+    insert_errors = 0
     for posting in postings:
-        matched = match_keywords(posting, cfg.keywords)
-        if not matched:
-            continue
-        record = {
-            "notice_id": posting.notice_id,
-            "site_name": posting.site_name,
-            "title": posting.title,
-            "org": posting.org,
-            "posted_at": posting.posted_at,
-            "deadline_at": posting.deadline_at,
-            "url": posting.url,
-            "estimated_price": posting.estimated_price,
-            "region": posting.region,
-            "matched_keywords": matched,
-            "body": posting.body,
-            "category": site.category,
-            "fetched_at": fetched_at,
-        }
-        if store.insert_bid_if_new(record):
-            inserted += 1
-    logger.info("[%s] fetched=%d inserted=%d", site.name, len(postings), inserted)
+        try:
+            matched = match_keywords(posting, cfg.keywords)
+            if not matched:
+                continue
+            record = {
+                "notice_id": posting.notice_id,
+                "site_name": posting.site_name,
+                "title": posting.title,
+                "org": posting.org,
+                "posted_at": posting.posted_at,
+                "deadline_at": posting.deadline_at,
+                "url": posting.url,
+                "estimated_price": posting.estimated_price,
+                "region": posting.region,
+                "matched_keywords": matched,
+                "body": posting.body,
+                "category": site.category,
+                "fetched_at": fetched_at,
+            }
+            if store.insert_bid_if_new(record):
+                inserted += 1
+        except Exception as exc:
+            insert_errors += 1
+            logger.warning("[%s] insert 실패 (notice_id=%s): %s", site.name, getattr(posting, "notice_id", "?"), exc)
+    if insert_errors:
+        logger.info("[%s] fetched=%d inserted=%d insert_errors=%d", site.name, len(postings), inserted, insert_errors)
+    else:
+        logger.info("[%s] fetched=%d inserted=%d", site.name, len(postings), inserted)
     return len(postings), inserted, None
 
 
