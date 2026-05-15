@@ -29,6 +29,7 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
     """returns (fetched, inserted, error_message). 한 사이트 실패가 전체 run을 망치지 않도록 전체를 격리."""
     try:
         adapter = build_adapter(site, cfg.runtime)
+        adapter.prefilter_titles = cfg.keywords.include  # detail fetch 절감용
         postings = adapter.fetch(since)
     except Exception as exc:
         logger.exception("[%s] adapter failed", site.name)

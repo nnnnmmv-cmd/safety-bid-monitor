@@ -87,7 +87,16 @@ class EgovAdapter(Adapter):
 
         posted_at = self._extract_date(row)
         notice_id = self._infer_notice_id(row, detail_url, title)
-        body, deadline_at, price = self._maybe_fetch_detail(detail_url)
+
+        # title 사전 매칭으로 detail fetch 절감 (99% 절감 가능)
+        should_fetch_detail = True
+        if self.prefilter_titles:
+            should_fetch_detail = any(kw in title for kw in self.prefilter_titles)
+
+        if should_fetch_detail:
+            body, deadline_at, price = self._maybe_fetch_detail(detail_url)
+        else:
+            body, deadline_at, price = "", None, None
 
         return BidPosting(
             notice_id=self._make_notice_id(notice_id),
@@ -133,9 +142,14 @@ class EgovAdapter(Adapter):
             # list_url(있으면) 기준으로 합쳐서 상대경로 ./xxx 가 정확히 디렉토리 기준이 되게
             base_for_join = self.site.list_url or (self.site.base_url + "/")
             href = urljoin(base_for_join, href)
-        # 상세 URL 추출 실패 시 list_url(게시판 페이지)로 폴백 — 메인 페이지로 가는 것 방지
+        # 상세 URL 추출 실패 시 list_url(+검색 파라미터)로 폴백 — 사용자가 게시판에서 직접 찾을 수 있게
         if not href:
-            href = self.site.list_url or self.site.base_url
+            base = self.site.list_url or self.site.base_url
+            if self.site.list_params and "?" not in base:
+                qs = "&".join(f"{k}={v}" for k, v in self.site.list_params.items() if v)
+                if qs:
+                    base = f"{base}?{qs}"
+            href = base
         return title, href
 
     def _extract_date(self, row: Tag) -> datetime | None:

@@ -32,6 +32,8 @@ class Adapter(ABC):
     def __init__(self, site: SiteConfig, runtime: RuntimeConfig) -> None:
         self.site = site
         self.runtime = runtime
+        # monitor가 주입하는 사전 매칭용 키워드 — title 매칭 안 되면 detail fetch 스킵
+        self.prefilter_titles: list[str] = []
         self.session = requests.Session()
         self.session.headers.update(
             {
