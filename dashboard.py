@@ -701,15 +701,17 @@ def page_run() -> None:
     st.header("▶️ 모니터링 수동 실행")
     st.caption("지금 즉시 한 번 돌립니다. 결과는 아래에 표시되고 신규 공고가 있으면 Slack/이메일로도 발송됩니다.")
 
+    active_count = sum(1 for s in sites_now if s.get("enabled"))
+    st.caption(f"활성화된 발주청 {active_count}개. 사이트당 평균 1~2분 소요됩니다. 매시간 cron이 도므로 즉시 확인이 필요한 경우에만 사용하세요.")
     if st.button("🚀 지금 실행", type="primary"):
-        with st.status("실행 중...", expanded=True) as status:
+        with st.status("실행 중... (최대 30분)", expanded=True) as status:
             try:
                 proc = subprocess.run(
                     [sys.executable, "-m", "src.monitor"],
                     cwd=str(PROJECT_ROOT),
                     capture_output=True,
                     text=True,
-                    timeout=600,
+                    timeout=1800,
                 )
                 st.text(proc.stdout[-3000:] if proc.stdout else "(stdout 없음)")
                 if proc.stderr:
@@ -719,7 +721,7 @@ def page_run() -> None:
                 else:
                     status.update(label=f"⚠ 종료 코드 {proc.returncode}", state="error")
             except subprocess.TimeoutExpired:
-                status.update(label="⏱ 10분 초과 — 강제 중단", state="error")
+                status.update(label="⏱ 30분 초과 — 강제 중단 (활성 사이트가 너무 많거나 응답 안 하는 사이트가 있음)", state="error")
             except Exception as exc:
                 status.update(label="❌ 예외", state="error")
                 st.code(traceback.format_exc())
