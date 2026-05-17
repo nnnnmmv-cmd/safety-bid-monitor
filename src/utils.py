@@ -36,13 +36,20 @@ def parse_date(text: str) -> datetime | None:
 
 
 def parse_price(text: str) -> int | None:
+    """'원' 단위가 명시된 가격만 추출. 명시 없으면 None (전체 숫자 합치는 버그 방지)."""
     if not text:
         return None
     m = _PRICE_RE.search(text)
     if not m:
-        digits = re.sub(r"[^\d]", "", text)
-        return int(digits) if digits else None
-    return int(m.group(1).replace(",", ""))
+        return None
+    try:
+        value = int(m.group(1).replace(",", ""))
+    except (ValueError, OverflowError):
+        return None
+    # bigint 안전 범위: 1조원(10**12) 초과는 명백한 오인식
+    if value > 10**12 or value < 0:
+        return None
+    return value
 
 
 def format_price(value: int | None) -> str:

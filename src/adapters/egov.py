@@ -125,19 +125,21 @@ class EgovAdapter(Adapter):
 
         title = link.get_text(strip=True)
         href_attr = self.site.selectors.get("detail_url_attr", "href")
-        href_value = link.get(href_attr) or link.get("href") or link.get("onclick") or ""
+        href_value = link.get(href_attr) or link.get("href") or ""
         href = str(href_value).strip()
+        onclick = str(link.get("onclick") or "").strip()
 
-        if href.startswith("javascript:") or "javascript:" in href:
-            # javascript:fn_view('12345') 또는 javascript:goView(12345) 같은 패턴에서 인자 추출
-            m = re.search(r"['\"]([^'\"]+)['\"]|\((\d+)\)", href)
+        # href가 비었거나 '#' 또는 javascript:면 onclick까지 합쳐서 URL/숫자 추출
+        if not href or href in ("#",) or href.startswith("javascript:") or "javascript:" in href:
+            combined = f"{href} {onclick}".strip()
+            m = re.search(r"['\"]([^'\"]+)['\"]|\((\s*\d+\s*)\)", combined)
             token = ""
             if m:
-                token = m.group(1) or m.group(2) or ""
+                token = (m.group(1) or m.group(2) or "").strip()
             if token.startswith("http") or token.startswith("/"):
                 href = token
             else:
-                href = ""  # 상세 URL 못 만들면 list_url로 폴백
+                href = ""  # 숫자(글번호)만 있으면 사이트별 상세 URL 패턴 모르므로 폴백
         if href and not href.startswith("http"):
             # list_url(있으면) 기준으로 합쳐서 상대경로 ./xxx 가 정확히 디렉토리 기준이 되게
             base_for_join = self.site.list_url or (self.site.base_url + "/")
