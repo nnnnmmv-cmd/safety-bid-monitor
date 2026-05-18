@@ -147,32 +147,33 @@ _FIELD_LABELS: list[tuple[str, str]] = [
 
 
 def _render_one_card(item: dict[str, object]) -> list[str]:
-    """공고 1건의 Slack 메시지 카드. extracted_fields 있으면 7필드 형식, 없으면 fallback."""
+    """공고 1건의 Slack 메시지 카드."""
     title = _slack_escape(str(item.get("title") or "(제목 없음)"))
     site = _slack_escape(str(item.get("site_name") or ""))
     url = str(item.get("url") or "")
     title_line = f"*[{site}] {title}*" if site else f"*{title}*"
 
-    lines: list[str] = [title_line, ""]
-
+    body_lines: list[str] = []
     fields = item.get("extracted_fields") or {}
     if isinstance(fields, dict) and any(fields.values()):
         for key, label in _FIELD_LABELS:
             val = str(fields.get(key) or "").strip()
             if val:
-                lines.append(f"• *{label}* : {_slack_escape(val)}")
+                body_lines.append(f"• *{label}* : {_slack_escape(val)}")
     else:
-        # LLM 추출 전(또는 실패) — 기본 메타 표시
         deadline = _parse_iso(item.get("deadline_at"))
         if deadline:
             dday = d_day_label(deadline)
-            lines.append(f"• *마감* : {deadline.strftime('%Y-%m-%d')} {dday}")
+            body_lines.append(f"• *마감* : {deadline.strftime('%Y-%m-%d')} {dday}")
         price_raw = item.get("estimated_price")
         if isinstance(price_raw, int) and price_raw > 0:
-            lines.append(f"• *추정가* : {_price_text(item)}")
-        if not lines[1:]:
-            lines.append("• _(상세 정보 분석 중 또는 본문 정보 부족)_")
+            body_lines.append(f"• *추정가* : {_price_text(item)}")
 
+    if not body_lines:
+        body_lines.append("• _(상세 정보 분석 중 또는 본문 정보 부족 — 첨부 파일을 확인해주세요)_")
+
+    lines: list[str] = [title_line, ""]
+    lines.extend(body_lines)
     if url:
         lines.append("")
         lines.append(f"🔗 <{url}|공고 원문 보기>")
@@ -277,7 +278,9 @@ def send_card_with_attachments(
         if file_paths and ts:
             uploads = [{"file": str(f), "filename": f.name} for f in file_paths if f and f.exists()]
             if uploads:
-                client.files_upload_v2(channel=channel_id, thread_ts=ts, file_uploads=uploads)
+                up = client.files_upload_v2(channel=channel_id, thread_ts=ts, file_uploads=uploads)
+                if not up.get("ok"):
+                    logger.warning("Slack 파일 업로드 응답 ok=False: %s", up.data)
         return True
     except Exception as exc:
         logger.warning("Slack Bot 발송 실패 (%s): %s", channel_id, exc)

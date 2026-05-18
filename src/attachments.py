@@ -156,6 +156,29 @@ def upload_to_slack(
         return False
 
 
+def extract_pdf_text(pdf_path: Path, max_pages: int = 20) -> str:
+    """PDF에서 텍스트 추출. 첫 N페이지만 (안전점검 공고는 대부분 짧음)."""
+    if not pdf_path or not pdf_path.exists() or pdf_path.suffix.lower() != ".pdf":
+        return ""
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(str(pdf_path))
+        parts: list[str] = []
+        for i, page in enumerate(reader.pages):
+            if i >= max_pages:
+                break
+            try:
+                t = page.extract_text() or ""
+                if t.strip():
+                    parts.append(t)
+            except Exception:
+                continue
+        return "\n".join(parts)
+    except Exception as exc:
+        logger.debug("[attachment] PDF 텍스트 추출 실패 (%s): %s", pdf_path.name, exc)
+        return ""
+
+
 def workspace_dir_for(notice_id: str, base: Path) -> Path:
     """notice_id별 작업 폴더."""
     safe = re.sub(r"[^\w\-=]+", "_", notice_id)[:100]

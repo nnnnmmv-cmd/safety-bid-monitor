@@ -63,25 +63,37 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
             }
             if store.insert_bid_if_new(record):
                 inserted += 1
-                # 1) LLM 7개 필드 추출
-                extracted: dict[str, str] = {}
-                if summarizer.is_available():
-                    try:
-                        extracted = summarizer.extract_bid_fields(record["title"], record["body"] or "")
-                        if any(extracted.values()):
-                            store.update_bid_extracted_fields(record["notice_id"], extracted)
-                    except Exception as ex:
-                        logger.warning("[%s] LLM 요약 실패 (%s): %s", site.name, record["notice_id"], ex)
-
-                # 2) 첨부파일 다운로드 + HWP→PDF (실패 시 원본)
+                # 1) 첨부파일 먼저 다운로드 + HWP→PDF (LLM 호출 전에 본문 확보용)
                 file_paths: list[Path] = []
+                pdf_texts: list[str] = []
                 if posting.attachments:
                     work = att_mod.workspace_dir_for(record["notice_id"], DATA_DIR / "attachments")
-                    for a in posting.attachments[:10]:  # 안전 상한
+                    for a in posting.attachments[:10]:
                         src, pdf = att_mod.prepare_for_upload(a.url, a.name, record["url"] or "", work)
                         chosen = pdf or src
                         if chosen and chosen.exists():
                             file_paths.append(chosen)
+                        # 모든 PDF에서 텍스트 추출 — LLM 본문 보강용
+                        if pdf:
+                            text = att_mod.extract_pdf_text(pdf)
+                            if text:
+                                pdf_texts.append(f"[{a.name}]\n{text}")
+
+                # 2) LLM 7개 필드 추출 (detail 본문 + 모든 첨부 PDF 본문 합쳐서)
+                extracted: dict[str, str] = {}
+                if summarizer.is_available():
+                    try:
+                        body_for_llm = record["body"] or ""
+                        if pdf_texts:
+                            joined = "\n\n".join(pdf_texts)
+                            body_for_llm = body_for_llm + "\n\n[첨부 문서 본문]\n" + joined[:10000]
+                        extracted = summarizer.extract_bid_fields(record["title"], body_for_llm)
+                        non_empty = sum(1 for v in extracted.values() if v)
+                        logger.info("[%s] LLM 추출 %d/7 (%s)", site.name, non_empty, record["title"][:30])
+                        if any(extracted.values()):
+                            store.update_bid_extracted_fields(record["notice_id"], extracted)
+                    except Exception as ex:
+                        logger.warning("[%s] LLM 요약 실패 (%s): %s", site.name, record["notice_id"], ex)
 
                 # 3) Slack 즉시 발송 (한 공고 = 한 메시지 + thread에 첨부)
                 row_for_send = dict(record)

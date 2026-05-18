@@ -85,7 +85,7 @@ def is_available() -> bool:
 
 def extract_bid_fields(title: str, body: str) -> dict[str, str]:
     """공고 제목+본문에서 7개 필드 추출. 실패 시 모두 빈 문자열."""
-    body = (body or "")[:4000]
+    body = (body or "")[:12000]
     if not title and not body:
         return dict(EMPTY_FIELDS)
 

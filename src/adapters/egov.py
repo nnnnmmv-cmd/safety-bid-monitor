@@ -234,11 +234,30 @@ class EgovAdapter(Adapter):
             return "", None, None, []
 
         soup = BeautifulSoup(html, "lxml")
-        text = soup.get_text("\n", strip=True)
+        # 본문 영역 우선 추출 — 페이지 헤더/네비 제외
+        body_container = self._find_body_container(soup)
+        if body_container is not None:
+            text = body_container.get_text("\n", strip=True)
+        else:
+            text = soup.get_text("\n", strip=True)
         deadline = self._find_deadline(text)
         price = parse_price(text)
         attachments = self._extract_attachments(soup, detail_url)
-        return text[:5000], deadline, price, attachments
+        return text[:8000], deadline, price, attachments
+
+    _BODY_SELECTORS: tuple[str, ...] = (
+        "div#contents", "div.board_view", "table.bbs_view",
+        "div.view_cont", "div.view_contents", "div.board_content",
+        "div.template", "div.contentsArea", "div.content_in",
+        "div.dl_view", "table.tbl_view", "div.p-wrap",
+    )
+
+    def _find_body_container(self, soup: BeautifulSoup) -> Tag | None:
+        for sel in self._BODY_SELECTORS:
+            el = soup.select_one(sel)
+            if isinstance(el, Tag) and len(el.get_text(strip=True)) > 200:
+                return el
+        return None
 
     def _extract_attachments(self, soup: BeautifulSoup, detail_url: str) -> list[Attachment]:
         """첨부파일 링크 추출. javascript 다운로드 함수 패턴 자동 처리."""
