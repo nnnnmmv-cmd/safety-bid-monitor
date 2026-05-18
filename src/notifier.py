@@ -246,35 +246,92 @@ def _resolve_targets(slack: SlackConfig, category: str) -> list[str]:
     return [f] if f else ([b] if b else ([c] if c else []))
 
 
+def _resolve_channel_ids(slack: SlackConfig, category: str) -> list[str]:
+    """Bot 모드: category → 채널 ID 리스트."""
+    cat = (category or "").strip()
+    b, c = slack.channel_building, slack.channel_civil
+    if cat == "건축":
+        return [b] if b else []
+    if cat == "토목":
+        return [c] if c else ([b] if b else [])
+    if cat in _BOTH_CATEGORIES:
+        targets = [x for x in (b, c) if x]
+        return targets if targets else []
+    return [b] if b else [c] if c else []
+
+
+def send_card_with_attachments(
+    slack: SlackConfig,
+    channel_id: str,
+    card_text: str,
+    file_paths: list,
+) -> bool:
+    """Slack Bot으로 메시지 발송 후 같은 thread에 파일 업로드."""
+    if not slack.bot_token or not channel_id:
+        return False
+    try:
+        from slack_sdk import WebClient
+        client = WebClient(token=slack.bot_token)
+        resp = client.chat_postMessage(channel=channel_id, text=card_text, mrkdwn=True)
+        ts = resp.get("ts")
+        if file_paths and ts:
+            uploads = [{"file": str(f), "filename": f.name} for f in file_paths if f and f.exists()]
+            if uploads:
+                client.files_upload_v2(channel=channel_id, thread_ts=ts, file_uploads=uploads)
+        return True
+    except Exception as exc:
+        logger.warning("Slack Bot 발송 실패 (%s): %s", channel_id, exc)
+        return False
+
+
 def notify_new_postings(cfg: AppConfig, rows: Sequence[dict[str, object]]) -> None:
+    """기존 호출처 호환용. 첨부파일 없이 발송. monitor는 send_one_posting을 직접 호출 권장."""
     if not rows:
         return
-    if cfg.slack:
+    if cfg.slack and cfg.slack.bot_token and (cfg.slack.channel_building or cfg.slack.channel_civil):
+        sent = 0
+        for row in rows:
+            targets = _resolve_channel_ids(cfg.slack, str(row.get("category") or ""))
+            if not targets:
+                continue
+            text = "\n".join(_render_one_card(dict(row)))
+            for ch in targets:
+                if send_card_with_attachments(cfg.slack, ch, text, []):
+                    sent += 1
+        logger.info("Slack Bot 발송 (첨부 없음): %d건 (rows=%d)", sent, len(rows))
+        return
+    if cfg.slack and (cfg.slack.building_webhook_url or cfg.slack.civil_webhook_url or cfg.slack.webhook_url):
+        # 구 webhook fallback
         by_channel: dict[str, list[dict[str, object]]] = {}
-        unrouted = 0
         for row in rows:
             targets = _resolve_targets(cfg.slack, str(row.get("category") or ""))
-            if not targets:
-                unrouted += 1
-                continue
             for url in targets:
                 by_channel.setdefault(url, []).append(dict(row))
         for url, items in by_channel.items():
             send_slack(url, render_slack(items))
-        if unrouted:
-            logger.warning("Slack webhook 매칭 안 된 공고 %d건 (카테고리 빈 값)", unrouted)
-        logger.info("Slack 알림 발송 완료 (%d건 → %d개 채널)", len(rows) - unrouted, len(by_channel))
+        logger.info("Slack webhook 발송 (%d채널)", len(by_channel))
         return
     if cfg.smtp:
-        send_email(
-            cfg.smtp,
-            subject=f"[안전진단 모니터] 신규 공고 {len(rows)}건",
-            text_body=render_text(rows),
-            html_body=render_html(rows),
-        )
-        logger.info("이메일 알림 발송 완료 (%d건)", len(rows))
+        send_email(cfg.smtp, f"[안전진단 모니터] 신규 공고 {len(rows)}건",
+                   render_text(rows), render_html(rows))
         return
-    logger.warning("Slack/SMTP 설정이 없어 알림 발송 생략 (%d건)", len(rows))
+    logger.warning("Slack/SMTP 미설정 (%d건)", len(rows))
+
+
+def send_one_posting(cfg: AppConfig, row: dict, file_paths: list) -> bool:
+    """공고 1건 + 첨부파일을 카테고리 채널에 발송 (메시지 + thread reply)."""
+    if not cfg.slack or not cfg.slack.bot_token:
+        return False
+    targets = _resolve_channel_ids(cfg.slack, str(row.get("category") or ""))
+    if not targets:
+        logger.warning("[%s] 매칭 채널 없음 — category=%r", row.get("site_name"), row.get("category"))
+        return False
+    text = "\n".join(_render_one_card(dict(row)))
+    ok_any = False
+    for ch in targets:
+        if send_card_with_attachments(cfg.slack, ch, text, file_paths):
+            ok_any = True
+    return ok_any
 
 
 def notify_error(cfg: AppConfig, summary: str, detail: str) -> None:

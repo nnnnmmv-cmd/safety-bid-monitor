@@ -27,10 +27,13 @@ class SmtpConfig:
 
 @dataclass
 class SlackConfig:
-    webhook_url: str           # 카테고리 없는 공고용 fallback (선택)
-    admin_webhook_url: str     # 에러 알림용 (선택)
-    building_webhook_url: str  # 건축 카테고리 채널
-    civil_webhook_url: str     # 토목 카테고리 채널
+    webhook_url: str           # (deprecated) 단순 텍스트 fallback
+    admin_webhook_url: str     # 에러 알림용
+    building_webhook_url: str  # 건축 webhook (fallback)
+    civil_webhook_url: str     # 토목 webhook (fallback)
+    bot_token: str             # Bot User OAuth Token (xoxb-) — 파일 업로드용
+    channel_building: str      # 건축 채널 ID (C0...)
+    channel_civil: str         # 토목 채널 ID
 
 
 @dataclass
@@ -112,14 +115,19 @@ def _load_slack() -> SlackConfig | None:
     building = os.getenv("SLACK_WEBHOOK_BUILDING", "").strip()
     civil = os.getenv("SLACK_WEBHOOK_CIVIL", "").strip()
     admin = os.getenv("SLACK_ADMIN_WEBHOOK_URL", "").strip()
-    # 하나라도 있으면 활성화
-    if not (fallback or building or civil or admin):
+    bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+    ch_b = os.getenv("SLACK_CHANNEL_BUILDING", "").strip()
+    ch_c = os.getenv("SLACK_CHANNEL_CIVIL", "").strip()
+    if not (fallback or building or civil or admin or bot_token):
         return None
     return SlackConfig(
         webhook_url=fallback,
         admin_webhook_url=admin or fallback or building or civil,
         building_webhook_url=building,
         civil_webhook_url=civil,
+        bot_token=bot_token,
+        channel_building=ch_b,
+        channel_civil=ch_c,
     )
 
 

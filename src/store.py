@@ -49,9 +49,13 @@ def _iso(value: Any) -> str | None:
 
 
 def insert_bid_if_new(posting: dict[str, Any]) -> bool:
-    """INSERT ON CONFLICT DO NOTHING. 신규면 True."""
+    """SELECT 후 신규일 때만 INSERT. 신규면 True."""
+    notice_id = posting["notice_id"]
+    existing = client().table("bids").select("notice_id").eq("notice_id", notice_id).limit(1).execute()
+    if existing.data:
+        return False
     record = {
-        "notice_id": posting["notice_id"],
+        "notice_id": notice_id,
         "site_name": posting["site_name"],
         "title": posting["title"],
         "org": posting.get("org"),
@@ -66,8 +70,14 @@ def insert_bid_if_new(posting: dict[str, Any]) -> bool:
         "fetched_at": posting.get("fetched_at") or datetime.utcnow().isoformat(),
         "notified": False,
     }
-    res = client().table("bids").upsert(record, on_conflict="notice_id", ignore_duplicates=True).execute()
-    return bool(res.data)
+    try:
+        client().table("bids").insert(record).execute()
+        return True
+    except Exception as exc:
+        # 동시성 race condition — 다른 cron이 동시에 같은 글을 INSERT했을 때
+        if "23505" in str(exc) or "duplicate" in str(exc).lower():
+            return False
+        raise
 
 
 def fetch_unnotified() -> list[dict[str, Any]]:

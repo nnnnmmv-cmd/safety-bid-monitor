@@ -6,11 +6,14 @@ import traceback
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 
+from pathlib import Path
+
+from . import attachments as att_mod
 from . import store, summarizer
 from .adapters.registry import build_adapter
-from .config import LOG_DIR, AppConfig, SiteConfig, load_config
+from .config import DATA_DIR, LOG_DIR, AppConfig, SiteConfig, load_config
 from .filter import match_keywords
-from .notifier import notify_error, notify_new_postings
+from .notifier import notify_error, notify_new_postings, send_one_posting
 from .utils import utc_now_iso
 
 logger: logging.Logger = logging.getLogger("safetybid")
@@ -60,14 +63,34 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
             }
             if store.insert_bid_if_new(record):
                 inserted += 1
-                # 신규 글에만 LLM 7개 필드 추출 시도 (proxy 안 돌면 스킵)
+                # 1) LLM 7개 필드 추출
+                extracted: dict[str, str] = {}
                 if summarizer.is_available():
                     try:
-                        fields = summarizer.extract_bid_fields(record["title"], record["body"] or "")
-                        if any(fields.values()):
-                            store.update_bid_extracted_fields(record["notice_id"], fields)
+                        extracted = summarizer.extract_bid_fields(record["title"], record["body"] or "")
+                        if any(extracted.values()):
+                            store.update_bid_extracted_fields(record["notice_id"], extracted)
                     except Exception as ex:
                         logger.warning("[%s] LLM 요약 실패 (%s): %s", site.name, record["notice_id"], ex)
+
+                # 2) 첨부파일 다운로드 + HWP→PDF (실패 시 원본)
+                file_paths: list[Path] = []
+                if posting.attachments:
+                    work = att_mod.workspace_dir_for(record["notice_id"], DATA_DIR / "attachments")
+                    for a in posting.attachments[:10]:  # 안전 상한
+                        src, pdf = att_mod.prepare_for_upload(a.url, a.name, record["url"] or "", work)
+                        chosen = pdf or src
+                        if chosen and chosen.exists():
+                            file_paths.append(chosen)
+
+                # 3) Slack 즉시 발송 (한 공고 = 한 메시지 + thread에 첨부)
+                row_for_send = dict(record)
+                row_for_send["extracted_fields"] = extracted
+                if send_one_posting(cfg, row_for_send, file_paths):
+                    store.mark_notified([record["notice_id"]])
+                    logger.info("[%s] 발송 완료: %s (첨부 %d개)", site.name, record["title"][:30], len(file_paths))
+                else:
+                    logger.warning("[%s] 발송 실패: %s", site.name, record["title"][:30])
         except Exception as exc:
             insert_errors += 1
             logger.warning("[%s] insert 실패 (notice_id=%s): %s", site.name, getattr(posting, "notice_id", "?"), exc)
@@ -98,13 +121,15 @@ def run_once() -> None:
         if err:
             errors.append(err)
 
+    # 새 흐름: 각 사이트 INSERT 직후 즉시 발송하므로 여기 unnotified는 대부분 비어 있음.
+    # 다만 이전 실행에서 발송 실패 등으로 남은 미발송이 있다면 첨부 없이 fallback 발송.
     new_rows = store.fetch_unnotified()
     site_meta = {s.name: s for s in cfg.sites}
     for r in new_rows:
         site = site_meta.get(str(r.get("site_name") or ""))
         r["category"] = site.category if site else r.get("category", "")
     logger.info(
-        "총 fetched=%d inserted=%d unnotified=%d",
+        "총 fetched=%d inserted=%d 이전 미발송 fallback=%d",
         total_fetched, total_inserted, len(new_rows),
     )
 
@@ -113,7 +138,7 @@ def run_once() -> None:
             notify_new_postings(cfg, new_rows)
             store.mark_notified([str(r["notice_id"]) for r in new_rows])
         except Exception as exc:
-            logger.exception("알림 발송 실패")
+            logger.exception("fallback 알림 발송 실패")
             errors.append(f"notify: {exc}")
 
     if errors:

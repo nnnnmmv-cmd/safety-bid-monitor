@@ -8,7 +8,9 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup, Tag
 
 from ..utils import parse_date, parse_price
-from .base import Adapter, BidPosting
+from urllib.parse import quote
+
+from .base import Adapter, Attachment, BidPosting
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -126,9 +128,9 @@ class EgovAdapter(Adapter):
             should_fetch_detail = any(kw in title for kw in self.prefilter_titles)
 
         if should_fetch_detail:
-            body, deadline_at, price = self._maybe_fetch_detail(detail_url)
+            body, deadline_at, price, attachments = self._maybe_fetch_detail(detail_url)
         else:
-            body, deadline_at, price = "", None, None
+            body, deadline_at, price, attachments = "", None, None, []
 
         return BidPosting(
             notice_id=self._make_notice_id(notice_id),
@@ -142,6 +144,7 @@ class EgovAdapter(Adapter):
             body=body,
             raw_html=str(row),
             region=self.site.region,
+            attachments=attachments,
         )
 
     def _extract_title_and_url(self, row: Tag) -> tuple[str, str]:
@@ -221,20 +224,111 @@ class EgovAdapter(Adapter):
                 return f"row={text}"
         return f"title={title[:40]}"
 
-    def _maybe_fetch_detail(self, detail_url: str) -> tuple[str, datetime | None, int | None]:
+    def _maybe_fetch_detail(self, detail_url: str) -> tuple[str, datetime | None, int | None, list[Attachment]]:
         if not detail_url:
-            return "", None, None
+            return "", None, None, []
         try:
             html = self._get(detail_url)
         except RuntimeError as exc:
             logger.debug("[%s] detail fetch failed: %s", self.site.name, exc)
-            return "", None, None
+            return "", None, None, []
 
         soup = BeautifulSoup(html, "lxml")
         text = soup.get_text("\n", strip=True)
         deadline = self._find_deadline(text)
         price = parse_price(text)
-        return text[:5000], deadline, price
+        attachments = self._extract_attachments(soup, detail_url)
+        return text[:5000], deadline, price, attachments
+
+    def _extract_attachments(self, soup: BeautifulSoup, detail_url: str) -> list[Attachment]:
+        """첨부파일 링크 추출. javascript 다운로드 함수 패턴 자동 처리."""
+        results: list[Attachment] = []
+        seen: set[str] = set()
+        _FILE_EXT = re.compile(r"\.(hwp|hwpx|pdf|docx?|xlsx?|pptx?|zip|jpg|png)\b", re.IGNORECASE)
+
+        for a in soup.find_all("a"):
+            href = (a.get("href") or "").strip()
+            onclick = (a.get("onclick") or "").strip()
+            text = a.get_text(strip=True)
+            combined = f"{href} {onclick} {text}"
+
+            ext_match = _FILE_EXT.search(combined)
+            if not ext_match and "filedown" not in combined.lower() and "downloadfile" not in combined.lower():
+                continue
+
+            file_url, file_name = self._resolve_download(href, onclick, text, detail_url)
+            if not file_url or file_name in seen:
+                continue
+            seen.add(file_name)
+            results.append(Attachment(name=file_name, url=file_url))
+        return results
+
+    def _resolve_download(self, href: str, onclick: str, text: str, detail_url: str) -> tuple[str, str]:
+        """download 링크와 파일명 추정. 알려진 javascript 패턴 + 일반 URL fallback."""
+        # 1) href가 절대 또는 상대 URL이면 그대로
+        if href.startswith("http"):
+            return href, self._filename_from_url_or_text(href, text)
+        if href and not href.startswith("javascript:") and href not in ("#", ""):
+            from urllib.parse import urljoin
+            absolute = urljoin(detail_url, href)
+            return absolute, self._filename_from_url_or_text(absolute, text)
+
+        # 2) javascript 패턴별 처리
+        combined = f"{href} {onclick}"
+        # 수원시·여주시·세종 등 eminwon 패턴: goDownLoad(user_nm, sys_nm, file_path)
+        m = re.search(r"goDownLoad\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]", combined)
+        if m:
+            user_nm, sys_nm, path = m.group(1), m.group(2), m.group(3)
+            base = self._eminwon_download_base(detail_url)
+            return f"{base}?user_file_nm={quote(user_nm)}&sys_file_nm={quote(sys_nm)}&file_path={quote(path)}", user_nm
+        # 가평군·김포시 등 ND_fileDownload 패턴
+        m = re.search(r"['\"](/[^'\"]*fileDownload[^'\"]*)['\"]", combined, re.IGNORECASE)
+        if m:
+            path = m.group(1)
+            from urllib.parse import urljoin
+            return urljoin(self.site.base_url + "/", path), self._guess_filename(text, path)
+        # 일반 download/atch 패턴
+        m = re.search(r"['\"](/[^'\"]+(?:atch|download)[^'\"]+)['\"]", combined, re.IGNORECASE)
+        if m:
+            from urllib.parse import urljoin
+            return urljoin(self.site.base_url + "/", m.group(1)), self._guess_filename(text, m.group(1))
+        return "", ""
+
+    def _eminwon_download_base(self, detail_url: str) -> str:
+        """수원시는 www.suwon.go.kr → eminwon.suwon.go.kr 로 다운로드. 추정."""
+        from urllib.parse import urlparse
+        p = urlparse(detail_url or self.site.base_url)
+        host = p.netloc
+        if host.startswith("www."):
+            host = "eminwon." + host[4:]
+        return f"{p.scheme}://{host}/emwp/jsp/ofr/FileDown.jsp"
+
+    @staticmethod
+    def _filename_from_url_or_text(url: str, text: str = "") -> str:
+        """URL의 user_file_nm 쿼리 파라미터 또는 텍스트에서 파일명 추출 (eminwon 호환)."""
+        from urllib.parse import urlparse, parse_qs, unquote
+        # 1) URL에 user_file_nm 쿼리가 있으면 가장 정확
+        try:
+            qs = parse_qs(urlparse(url).query)
+            for key in ("user_file_nm", "file_name", "fileName", "fileNm"):
+                if qs.get(key):
+                    name = unquote(qs[key][0])
+                    if "." in name:
+                        return name
+        except Exception:
+            pass
+        # 2) 표시 텍스트에서 .ext 패턴 (수원시: "hwp파일명.hwp" 같은 접두사 제거)
+        for source in (text, url):
+            m = re.search(r"([^/\s'\"]+\.(?:hwp|hwpx|pdf|docx?|xlsx?|pptx?|zip))", source, re.IGNORECASE)
+            if m:
+                name = m.group(1)
+                return re.sub(r"^(hwp|hwpx|pdf|doc|docx|xls|xlsx|ppt|pptx|zip)(?=[가-힣A-Z\(])", "", name)
+        return (text or url)[:80]
+
+    @classmethod
+    def _guess_filename(cls, text: str, url_or_text: str = "") -> str:
+        """후방 호환용 별칭."""
+        return cls._filename_from_url_or_text(url_or_text, text)
 
     def _find_deadline(self, text: str) -> datetime | None:
         for keyword in ("입찰마감", "접수마감", "제출마감", "신청마감", "마감일시", "마감일"):

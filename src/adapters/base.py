@@ -13,6 +13,13 @@ from ..config import RuntimeConfig, SiteConfig
 
 
 @dataclass
+class Attachment:
+    name: str           # 사람이 보는 파일명 (예: "공고문.hwp")
+    url: str            # 직접 다운로드 가능한 절대 URL
+    sys_name: str = ""  # 서버측 저장 파일명 (수원시처럼 별개일 때)
+
+
+@dataclass
 class BidPosting:
     notice_id: str
     site_name: str
@@ -26,6 +33,7 @@ class BidPosting:
     raw_html: str
     region: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
+    attachments: list[Attachment] = field(default_factory=list)
 
 
 class Adapter(ABC):
