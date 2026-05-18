@@ -113,10 +113,23 @@ def write_keywords(data: dict[str, list[str]]) -> None:
     )
 
 
+_ENV_KEYS: list[str] = [
+    "SLACK_WEBHOOK_URL", "SLACK_ADMIN_WEBHOOK_URL",
+    "SLACK_WEBHOOK_BUILDING", "SLACK_WEBHOOK_CIVIL",
+    "SLACK_BOT_TOKEN", "SLACK_CHANNEL_BUILDING", "SLACK_CHANNEL_CIVIL",
+    "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_APP_PASSWORD",
+    "NOTIFY_TO", "NOTIFY_ADMIN",
+    "LOOKBACK_HOURS", "REQUEST_DELAY_SEC", "HTTP_TIMEOUT_SEC",
+    "SUPABASE_URL", "SUPABASE_ANON_KEY", "SUPABASE_SERVICE_KEY",
+    "OPENCLAW_PROXY_URL", "OPENCLAW_MODEL", "ENABLE_HWP_CONVERT",
+]
+
+
 def read_env() -> dict[str, str]:
-    if not ENV_PATH.exists():
-        return {}
-    return {k: (v or "") for k, v in dotenv_values(str(ENV_PATH)).items()}
+    """로컬 .env 우선, 없으면 os.environ (Streamlit Cloud 등)."""
+    if ENV_PATH.exists():
+        return {k: (v or "") for k, v in dotenv_values(str(ENV_PATH)).items()}
+    return {k: os.environ.get(k, "") for k in _ENV_KEYS}
 
 
 def write_env(values: dict[str, str]) -> None:
@@ -188,7 +201,8 @@ st.sidebar.divider()
 
 env_now = read_env()
 slack_set = bool(
-    (env_now.get("SLACK_WEBHOOK_URL") or "").strip()
+    (env_now.get("SLACK_BOT_TOKEN") or "").strip()
+    or (env_now.get("SLACK_WEBHOOK_URL") or "").strip()
     or (env_now.get("SLACK_WEBHOOK_BUILDING") or "").strip()
     or (env_now.get("SLACK_WEBHOOK_CIVIL") or "").strip()
 )
