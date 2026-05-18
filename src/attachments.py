@@ -115,12 +115,13 @@ def prepare_for_upload(url: str, name_hint: str, referer: str, work_dir: Path) -
     src = download_attachment(url, work_dir, name_hint, referer)
     if src is None:
         return None, None
-    if src.suffix.lower() in HWP_EXTS:
-        pdf = convert_to_pdf(src)
-        return src, pdf  # pdf가 None이면 원본만
+    if src.suffix.lower() == ".hwp":
+        # 1차: LibreOffice (보통 막힘) → 2차: pyhwp + reportlab
+        pdf = convert_to_pdf(src) or hwp_to_text_pdf(src, title=src.stem)
+        return src, pdf
     if src.suffix.lower() == ".pdf":
-        return src, src  # PDF는 그 자체가 변환된 것
-    return src, None
+        return src, src
+    return src, convert_to_pdf(src)
 
 
 def upload_to_slack(
@@ -189,6 +190,79 @@ def extract_attachment_text(file_path: Path) -> str:
     if ext == ".hwp":
         return extract_hwp_text(file_path)
     return ""
+
+
+# 한글 PDF 생성용 폰트
+KO_FONT_PATH: str = "/System/Library/Fonts/AppleSDGothicNeo.ttc"
+
+
+def hwp_to_text_pdf(hwp_path: Path, title: str = "") -> Path | None:
+    """HWP를 pyhwp 텍스트 → reportlab PDF로 변환.
+    표·이미지는 손실되지만 모바일에서도 텍스트 본문 확인 가능. LibreOffice/Java 의존 X.
+    """
+    if not hwp_path or not hwp_path.exists() or hwp_path.suffix.lower() != ".hwp":
+        return None
+    text = extract_hwp_text(hwp_path)
+    if not text.strip():
+        return None
+    pdf_path = hwp_path.with_suffix(".pdf")
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import mm
+        from reportlab.pdfgen import canvas
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+
+        try:
+            pdfmetrics.registerFont(TTFont("KO", KO_FONT_PATH, subfontIndex=0))
+        except Exception:
+            try:
+                pdfmetrics.registerFont(TTFont("KO", "/System/Library/Fonts/Supplemental/AppleGothic.ttf"))
+            except Exception as exc:
+                logger.warning("[attachment] 한글 폰트 등록 실패: %s", exc)
+                return None
+
+        c = canvas.Canvas(str(pdf_path), pagesize=A4)
+        width, height = A4
+        margin = 20 * mm
+        y = height - margin
+        line_height = 14
+        max_width = width - 2 * margin
+
+        # 제목
+        if title:
+            c.setFont("KO", 14)
+            for line in _wrap_text(title, 35):
+                c.drawString(margin, y, line)
+                y -= 20
+            y -= 10
+
+        c.setFont("KO", 10)
+        for raw_line in text.split("\n"):
+            for line in _wrap_text(raw_line, 60):
+                if y < margin:
+                    c.showPage()
+                    c.setFont("KO", 10)
+                    y = height - margin
+                c.drawString(margin, y, line)
+                y -= line_height
+        c.save()
+        return pdf_path if pdf_path.exists() else None
+    except Exception as exc:
+        logger.warning("[attachment] reportlab PDF 생성 실패 (%s): %s", hwp_path.name, exc)
+        return None
+
+
+def _wrap_text(s: str, max_chars: int) -> list[str]:
+    """단순 글자 수 기준 줄바꿈. 한글 비례폭 약식 (정확하진 않지만 실용)."""
+    s = s.rstrip()
+    if not s:
+        return [""]
+    out: list[str] = []
+    while s:
+        out.append(s[:max_chars])
+        s = s[max_chars:]
+    return out
 
 
 def extract_pdf_text(pdf_path: Path, max_pages: int = 20) -> str:

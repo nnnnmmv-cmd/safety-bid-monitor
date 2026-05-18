@@ -63,24 +63,25 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
             }
             if store.insert_bid_if_new(record):
                 inserted += 1
-                # 1) 첨부파일 다운로드 (HWP는 변환 없이 원본 + pyhwp 텍스트 추출)
+                # 1) 첨부파일 다운로드 + HWP→PDF 변환 (pyhwp + reportlab)
                 file_paths: list[Path] = []
                 attach_texts: list[str] = []
                 if posting.attachments:
                     work = att_mod.workspace_dir_for(record["notice_id"], DATA_DIR / "attachments")
                     for a in posting.attachments[:10]:
                         src, pdf = att_mod.prepare_for_upload(a.url, a.name, record["url"] or "", work)
-                        chosen = pdf or src
+                        # PDF가 있으면 PDF만 첨부 (HWP→PDF 변환 결과 또는 원본 PDF), 없으면 원본
+                        chosen = pdf if pdf and pdf.exists() else src
                         if chosen and chosen.exists():
                             file_paths.append(chosen)
-                        # 텍스트 추출 — PDF (pypdf) / HWP (pyhwp) / 둘 다 LLM 본문 보강용
+                        # 텍스트 추출 — LLM 본문 보강용 (PDF 또는 HWP 중 하나)
                         for f in (pdf, src):
                             if not f:
                                 continue
                             text = att_mod.extract_attachment_text(f)
                             if text and len(text) > 50:
                                 attach_texts.append(f"[{a.name}]\n{text}")
-                                break  # PDF 또는 HWP 중 하나만
+                                break
 
                 # 2) LLM 7개 필드 추출 (detail 본문 + 모든 첨부 본문 합쳐서)
                 extracted: dict[str, str] = {}
