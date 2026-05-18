@@ -78,8 +78,11 @@ def convert_to_pdf(src: Path) -> Path | None:
         return None
 
     out_dir = src.parent
+    # HWP 변환은 환경변수로 켤 수 있게 — Java/H2Orestart 호환성 미해결 상태에서는 기본 OFF
+    if ext in HWP_EXTS and os.getenv("ENABLE_HWP_CONVERT", "false").lower() not in ("1", "true", "yes"):
+        logger.debug("[attachment] HWP 변환 스킵 (ENABLE_HWP_CONVERT=false): %s", src.name)
+        return None
     try:
-        # H2Orestart 확장이 있는 공용 profile 사용 — 동시 호출 시 lock 가능하지만 우리 monitor는 순차
         proc = subprocess.run(
             [
                 SOFFICE,
@@ -89,18 +92,18 @@ def convert_to_pdf(src: Path) -> Path | None:
                 "--outdir", str(out_dir),
                 str(src),
             ],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=30,
         )
         if proc.returncode != 0:
             logger.warning(
-                "[attachment] LibreOffice 변환 실패 (%s): rc=%d stderr=%s",
-                src.name, proc.returncode, proc.stderr[:200].strip(),
+                "[attachment] 변환 실패 (%s): %s",
+                src.name, proc.stderr[:150].strip(),
             )
             return None
         pdf_path = out_dir / (src.stem + ".pdf")
         return pdf_path if pdf_path.exists() else None
     except subprocess.TimeoutExpired:
-        logger.warning("[attachment] LibreOffice timeout (60s): %s", src.name)
+        logger.warning("[attachment] 변환 timeout: %s", src.name)
         return None
     except FileNotFoundError as exc:
         logger.warning("[attachment] LibreOffice 호출 실패 (%s): %s", src.name, exc)
