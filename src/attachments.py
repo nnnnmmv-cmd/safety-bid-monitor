@@ -159,6 +159,38 @@ def upload_to_slack(
         return False
 
 
+HWP5TXT: str = shutil.which("hwp5txt") or str(Path(__file__).resolve().parent.parent / ".venv/bin/hwp5txt")
+
+
+def extract_hwp_text(hwp_path: Path) -> str:
+    """pyhwp로 .hwp 파일에서 텍스트 직접 추출 (LibreOffice/Java 의존 없음).
+    .hwpx는 미지원 (다른 포맷)."""
+    if not hwp_path or not hwp_path.exists() or hwp_path.suffix.lower() != ".hwp":
+        return ""
+    try:
+        proc = subprocess.run(
+            [HWP5TXT, str(hwp_path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode == 0:
+            return proc.stdout or ""
+        return ""
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return ""
+
+
+def extract_attachment_text(file_path: Path) -> str:
+    """파일 확장자에 따라 적절한 텍스트 추출 함수 호출."""
+    if not file_path or not file_path.exists():
+        return ""
+    ext = file_path.suffix.lower()
+    if ext == ".pdf":
+        return extract_pdf_text(file_path)
+    if ext == ".hwp":
+        return extract_hwp_text(file_path)
+    return ""
+
+
 def extract_pdf_text(pdf_path: Path, max_pages: int = 20) -> str:
     """PDF에서 텍스트 추출. 첫 N페이지만 (안전점검 공고는 대부분 짧음)."""
     if not pdf_path or not pdf_path.exists() or pdf_path.suffix.lower() != ".pdf":

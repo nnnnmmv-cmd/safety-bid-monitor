@@ -63,9 +63,9 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
             }
             if store.insert_bid_if_new(record):
                 inserted += 1
-                # 1) 첨부파일 먼저 다운로드 + HWP→PDF (LLM 호출 전에 본문 확보용)
+                # 1) 첨부파일 다운로드 (HWP는 변환 없이 원본 + pyhwp 텍스트 추출)
                 file_paths: list[Path] = []
-                pdf_texts: list[str] = []
+                attach_texts: list[str] = []
                 if posting.attachments:
                     work = att_mod.workspace_dir_for(record["notice_id"], DATA_DIR / "attachments")
                     for a in posting.attachments[:10]:
@@ -73,19 +73,22 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
                         chosen = pdf or src
                         if chosen and chosen.exists():
                             file_paths.append(chosen)
-                        # 모든 PDF에서 텍스트 추출 — LLM 본문 보강용
-                        if pdf:
-                            text = att_mod.extract_pdf_text(pdf)
-                            if text:
-                                pdf_texts.append(f"[{a.name}]\n{text}")
+                        # 텍스트 추출 — PDF (pypdf) / HWP (pyhwp) / 둘 다 LLM 본문 보강용
+                        for f in (pdf, src):
+                            if not f:
+                                continue
+                            text = att_mod.extract_attachment_text(f)
+                            if text and len(text) > 50:
+                                attach_texts.append(f"[{a.name}]\n{text}")
+                                break  # PDF 또는 HWP 중 하나만
 
-                # 2) LLM 7개 필드 추출 (detail 본문 + 모든 첨부 PDF 본문 합쳐서)
+                # 2) LLM 7개 필드 추출 (detail 본문 + 모든 첨부 본문 합쳐서)
                 extracted: dict[str, str] = {}
                 if summarizer.is_available():
                     try:
                         body_for_llm = record["body"] or ""
-                        if pdf_texts:
-                            joined = "\n\n".join(pdf_texts)
+                        if attach_texts:
+                            joined = "\n\n".join(attach_texts)
                             body_for_llm = body_for_llm + "\n\n[첨부 문서 본문]\n" + joined[:10000]
                         extracted = summarizer.extract_bid_fields(record["title"], body_for_llm)
                         non_empty = sum(1 for v in extracted.values() if v)
