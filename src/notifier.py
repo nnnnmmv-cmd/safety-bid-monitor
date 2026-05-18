@@ -179,12 +179,47 @@ def send_slack(webhook_url: str, text: str, http_timeout: float = 15.0) -> None:
 
 # ---------------- Dispatch ----------------
 
+_BOTH_CATEGORIES: set[str] = {"건축·토목", "건축/토목", "토목/건축", "토목·건축"}
+
+
+def _resolve_targets(slack: SlackConfig, category: str) -> list[str]:
+    """공고의 category에 따라 발송할 Slack webhook URL 목록 반환.
+
+    - 건축 → 건축 채널 (없으면 fallback)
+    - 토목 → 토목 채널 (없으면 fallback → 건축 임시)
+    - 건축·토목 → 양쪽 모두 (없으면 fallback)
+    - 카테고리 없음 → fallback (없으면 건축 또는 토목)
+    """
+    cat = (category or "").strip()
+    b, c, f = slack.building_webhook_url, slack.civil_webhook_url, slack.webhook_url
+    if cat == "건축":
+        return [b] if b else ([f] if f else [])
+    if cat == "토목":
+        return [c] if c else ([f] if f else ([b] if b else []))
+    if cat in _BOTH_CATEGORIES:
+        targets = [u for u in (b, c) if u]
+        return targets if targets else ([f] if f else [])
+    return [f] if f else ([b] if b else ([c] if c else []))
+
+
 def notify_new_postings(cfg: AppConfig, rows: Sequence[dict[str, object]]) -> None:
     if not rows:
         return
     if cfg.slack:
-        send_slack(cfg.slack.webhook_url, render_slack(rows))
-        logger.info("Slack 알림 발송 완료 (%d건)", len(rows))
+        by_channel: dict[str, list[dict[str, object]]] = {}
+        unrouted = 0
+        for row in rows:
+            targets = _resolve_targets(cfg.slack, str(row.get("category") or ""))
+            if not targets:
+                unrouted += 1
+                continue
+            for url in targets:
+                by_channel.setdefault(url, []).append(dict(row))
+        for url, items in by_channel.items():
+            send_slack(url, render_slack(items))
+        if unrouted:
+            logger.warning("Slack webhook 매칭 안 된 공고 %d건 (카테고리 빈 값)", unrouted)
+        logger.info("Slack 알림 발송 완료 (%d건 → %d개 채널)", len(rows) - unrouted, len(by_channel))
         return
     if cfg.smtp:
         send_email(

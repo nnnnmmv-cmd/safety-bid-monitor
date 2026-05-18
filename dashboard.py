@@ -187,7 +187,11 @@ page = st.sidebar.radio("메뉴", PAGES, label_visibility="collapsed")
 st.sidebar.divider()
 
 env_now = read_env()
-slack_set = bool((env_now.get("SLACK_WEBHOOK_URL") or "").strip())
+slack_set = bool(
+    (env_now.get("SLACK_WEBHOOK_URL") or "").strip()
+    or (env_now.get("SLACK_WEBHOOK_BUILDING") or "").strip()
+    or (env_now.get("SLACK_WEBHOOK_CIVIL") or "").strip()
+)
 smtp_set = bool((env_now.get("SMTP_USER") or "").strip() and (env_now.get("SMTP_APP_PASSWORD") or "").strip())
 channel_label = "Slack" if slack_set else ("이메일" if smtp_set else "❌ 미설정")
 st.sidebar.metric("현재 알림 채널", channel_label)

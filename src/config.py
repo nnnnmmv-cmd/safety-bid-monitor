@@ -27,8 +27,10 @@ class SmtpConfig:
 
 @dataclass
 class SlackConfig:
-    webhook_url: str
-    admin_webhook_url: str
+    webhook_url: str           # 카테고리 없는 공고용 fallback (선택)
+    admin_webhook_url: str     # 에러 알림용 (선택)
+    building_webhook_url: str  # 건축 카테고리 채널
+    civil_webhook_url: str     # 토목 카테고리 채널
 
 
 @dataclass
@@ -106,12 +108,18 @@ def _load_smtp() -> SmtpConfig | None:
 
 
 def _load_slack() -> SlackConfig | None:
-    webhook = os.getenv("SLACK_WEBHOOK_URL", "").strip()
-    if not webhook:
+    fallback = os.getenv("SLACK_WEBHOOK_URL", "").strip()
+    building = os.getenv("SLACK_WEBHOOK_BUILDING", "").strip()
+    civil = os.getenv("SLACK_WEBHOOK_CIVIL", "").strip()
+    admin = os.getenv("SLACK_ADMIN_WEBHOOK_URL", "").strip()
+    # 하나라도 있으면 활성화
+    if not (fallback or building or civil or admin):
         return None
     return SlackConfig(
-        webhook_url=webhook,
-        admin_webhook_url=os.getenv("SLACK_ADMIN_WEBHOOK_URL", "").strip() or webhook,
+        webhook_url=fallback,
+        admin_webhook_url=admin or fallback or building or civil,
+        building_webhook_url=building,
+        civil_webhook_url=civil,
     )
 
 
