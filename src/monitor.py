@@ -6,7 +6,7 @@ import traceback
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 
-from . import store
+from . import store, summarizer
 from .adapters.registry import build_adapter
 from .config import LOG_DIR, AppConfig, SiteConfig, load_config
 from .filter import match_keywords
@@ -60,6 +60,14 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
             }
             if store.insert_bid_if_new(record):
                 inserted += 1
+                # 신규 글에만 LLM 7개 필드 추출 시도 (proxy 안 돌면 스킵)
+                if summarizer.is_available():
+                    try:
+                        fields = summarizer.extract_bid_fields(record["title"], record["body"] or "")
+                        if any(fields.values()):
+                            store.update_bid_extracted_fields(record["notice_id"], fields)
+                    except Exception as ex:
+                        logger.warning("[%s] LLM 요약 실패 (%s): %s", site.name, record["notice_id"], ex)
         except Exception as exc:
             insert_errors += 1
             logger.warning("[%s] insert 실패 (notice_id=%s): %s", site.name, getattr(posting, "notice_id", "?"), exc)

@@ -15,11 +15,18 @@
     <key>WorkingDirectory</key>
     <string>/Users/dev06/Safety diagnosis bid</string>
 
+    <!-- KST 매 3시간 5분에 실행 (9,12,15,18,21,0,3,6시) -->
     <key>StartCalendarInterval</key>
-    <dict>
-        <key>Minute</key>
-        <integer>5</integer>
-    </dict>
+    <array>
+        <dict><key>Hour</key><integer>0</integer><key>Minute</key><integer>5</integer></dict>
+        <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>5</integer></dict>
+        <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>5</integer></dict>
+        <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>5</integer></dict>
+        <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>5</integer></dict>
+        <dict><key>Hour</key><integer>15</integer><key>Minute</key><integer>5</integer></dict>
+        <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>5</integer></dict>
+        <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>5</integer></dict>
+    </array>
 
     <key>RunAtLoad</key>
     <false/>

@@ -88,6 +88,11 @@ def mark_notified(notice_ids: list[str]) -> None:
     client().table("bids").update({"notified": True}).in_("notice_id", notice_ids).execute()
 
 
+def update_bid_extracted_fields(notice_id: str, fields: dict[str, str]) -> None:
+    """LLM 추출 7개 필드를 bids.extracted_fields(jsonb)에 저장."""
+    client().table("bids").update({"extracted_fields": fields}).eq("notice_id", notice_id).execute()
+
+
 def fetch_recent_bids(limit: int = 500) -> list[dict[str, Any]]:
     res = (
         client().table("bids").select("*")

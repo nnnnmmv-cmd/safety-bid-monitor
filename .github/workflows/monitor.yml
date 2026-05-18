@@ -1,10 +1,9 @@
 name: monitor
 
-# 매 3시간마다 5분에 실행 — UTC 0,3,6,9,12,15,18,21시 = KST 9,12,15,18,21,0,3,6시 5분
-# + 수동 트리거 버튼
+# cron 비활성화 — claude-max-api-proxy(localhost:3456) 사용을 위해
+# 매시간 자동 실행은 사용자 맥북의 launchd가 담당 (launchd/com.safetybid.monitor.plist)
+# 이 워크플로는 백업용 수동 트리거만 유지 (Actions 페이지 'Run workflow' 버튼)
 on:
-  schedule:
-    - cron: '5 */3 * * *'
   workflow_dispatch:
 
 # 동시 실행 방지 — 동일 워크플로가 겹치면 새 것이 옛 것을 cancel

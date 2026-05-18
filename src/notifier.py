@@ -135,26 +135,70 @@ def _slack_escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+_FIELD_LABELS: list[tuple[str, str]] = [
+    ("inspection_cost", "안전점검비용"),
+    ("contractor", "시공자"),
+    ("scale", "규모"),
+    ("bid_period", "접수방법"),
+    ("evaluation_method", "평가방법"),
+    ("low_bid_rate", "낙찰하한율"),
+    ("winner_selection", "낙찰자 선정"),
+]
+
+
+def _render_one_card(item: dict[str, object]) -> list[str]:
+    """공고 1건의 Slack 메시지 카드. extracted_fields 있으면 7필드 형식, 없으면 fallback."""
+    title = _slack_escape(str(item.get("title") or "(제목 없음)"))
+    site = _slack_escape(str(item.get("site_name") or ""))
+    url = str(item.get("url") or "")
+    title_line = f"*[{site}] {title}*" if site else f"*{title}*"
+
+    lines: list[str] = [title_line, ""]
+
+    fields = item.get("extracted_fields") or {}
+    if isinstance(fields, dict) and any(fields.values()):
+        for key, label in _FIELD_LABELS:
+            val = str(fields.get(key) or "").strip()
+            if val:
+                lines.append(f"• *{label}* : {_slack_escape(val)}")
+    else:
+        # LLM 추출 전(또는 실패) — 기본 메타 표시
+        deadline = _parse_iso(item.get("deadline_at"))
+        if deadline:
+            dday = d_day_label(deadline)
+            lines.append(f"• *마감* : {deadline.strftime('%Y-%m-%d')} {dday}")
+        price_raw = item.get("estimated_price")
+        if isinstance(price_raw, int) and price_raw > 0:
+            lines.append(f"• *추정가* : {_price_text(item)}")
+        if not lines[1:]:
+            lines.append("• _(상세 정보 분석 중 또는 본문 정보 부족)_")
+
+    if url:
+        lines.append("")
+        lines.append(f"🔗 <{url}|공고 원문 보기>")
+    return lines
+
+
 def render_slack(rows: Sequence[dict[str, object]]) -> str:
     if not rows:
         return "신규 공고가 없습니다."
-    grouped = _group_by_site(rows)
-    lines: list[str] = [f"*🛠 안전진단 신규 공고 {len(rows)}건*", ""]
-    for site, items in grouped.items():
-        cat = str(items[0].get("category") or "").strip()
-        tag = f" `[{_slack_escape(cat)}]`" if cat else ""
-        lines.append(f"*▶ {_slack_escape(site)}*{tag} _({len(items)}건)_")
-        for item in items:
-            title = _slack_escape(str(item.get("title") or "(제목 없음)"))
-            url = str(item.get("url") or "")
-            deadline = _parse_iso(item.get("deadline_at"))
-            dday = d_day_label(deadline) if deadline else ""
-            deadline_text = deadline.strftime("%Y-%m-%d") if deadline else "미정"
-            link = f"<{url}|{title}>" if url else title
-            lines.append(f"• {link}")
-            lines.append(f"   마감 `{deadline_text}` {dday} | 추정가 `{_price_text(item)}`")
-        lines.append("")
-    return "\n".join(lines)
+    # 헤더 — 카테고리 그룹 (한 채널엔 보통 한 카테고리만 옴)
+    cats: list[str] = []
+    seen: set[str] = set()
+    for r in rows:
+        c = str(r.get("category") or "").strip()
+        if c and c not in seen:
+            cats.append(c); seen.add(c)
+    cat_label = " / ".join(cats) if cats else "기타"
+    header = f"*🛠 안전진단 신규 공고 {len(rows)}건* `[{_slack_escape(cat_label)}]`"
+
+    parts: list[str] = [header, ""]
+    for i, item in enumerate(rows):
+        if i > 0:
+            parts.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        parts.extend(_render_one_card(item))
+        parts.append("")
+    return "\n".join(parts)
 
 
 def send_slack(webhook_url: str, text: str, http_timeout: float = 15.0) -> None:
