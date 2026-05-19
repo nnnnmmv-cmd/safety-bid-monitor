@@ -648,38 +648,83 @@ def page_keywords() -> None:
 def page_notify() -> None:
     st.header("🔔 알림 설정")
     env = read_env()
+    is_cloud = not ENV_PATH.exists()  # Streamlit Cloud는 .env 없음
 
-    st.subheader("Slack")
-    slack = st.text_input(
-        "SLACK_WEBHOOK_URL",
-        value=env.get("SLACK_WEBHOOK_URL", ""),
-        type="password",
-        help="https://api.slack.com/apps 에서 발급한 Incoming Webhook URL",
-    )
-    slack_admin = st.text_input(
-        "SLACK_ADMIN_WEBHOOK_URL (에러 알림 별도 채널, 옵션)",
-        value=env.get("SLACK_ADMIN_WEBHOOK_URL", ""),
-        type="password",
-    )
+    if is_cloud:
+        st.info(
+            "ℹ️ **Streamlit Cloud 환경** — 이 페이지는 현재 값 **확인 + 테스트 발송**용입니다.\n"
+            "값 변경은 https://share.streamlit.io → 본인 앱 → **⋮ Settings → Secrets**에서 직접 편집해주세요. "
+            "(파일 쓰기 권한이 없어 여기서 저장해도 영구 반영 안 됩니다)"
+        )
 
-    st.subheader("이메일 (Slack을 안 쓸 때만)")
+    st.subheader("Slack — Bot 모드 (현재 사용 중)")
     c1, c2 = st.columns(2)
-    smtp_user = c1.text_input("SMTP_USER (Gmail 주소)", value=env.get("SMTP_USER", ""))
-    smtp_pw = c2.text_input("SMTP_APP_PASSWORD (16자리, 공백 없이)", value=env.get("SMTP_APP_PASSWORD", ""), type="password")
-    notify_to = st.text_input("NOTIFY_TO (수신 이메일, 여러 명은 쉼표)", value=env.get("NOTIFY_TO", ""))
-    notify_admin = st.text_input("NOTIFY_ADMIN (에러 수신 이메일)", value=env.get("NOTIFY_ADMIN", ""))
+    bot_token = c1.text_input(
+        "SLACK_BOT_TOKEN (xoxb-...)",
+        value=env.get("SLACK_BOT_TOKEN", ""),
+        type="password",
+        disabled=is_cloud,
+        help="Bot User OAuth Token. 메시지 발송 + 파일 업로드용.",
+    )
+    ch_b = c2.text_input(
+        "SLACK_CHANNEL_BUILDING (건축 채널 ID, C...)",
+        value=env.get("SLACK_CHANNEL_BUILDING", ""),
+        disabled=is_cloud,
+    )
+    ch_c = st.text_input(
+        "SLACK_CHANNEL_CIVIL (토목 채널 ID, C...)",
+        value=env.get("SLACK_CHANNEL_CIVIL", ""),
+        disabled=is_cloud,
+    )
+
+    with st.expander("Slack Webhook (fallback — Bot이 없을 때 텍스트만)"):
+        wh_b = st.text_input(
+            "SLACK_WEBHOOK_BUILDING",
+            value=env.get("SLACK_WEBHOOK_BUILDING", ""),
+            type="password", disabled=is_cloud,
+        )
+        wh_c = st.text_input(
+            "SLACK_WEBHOOK_CIVIL",
+            value=env.get("SLACK_WEBHOOK_CIVIL", ""),
+            type="password", disabled=is_cloud,
+        )
+        wh_url = st.text_input(
+            "SLACK_WEBHOOK_URL (단일 채널 fallback)",
+            value=env.get("SLACK_WEBHOOK_URL", ""),
+            type="password", disabled=is_cloud,
+        )
+        wh_admin = st.text_input(
+            "SLACK_ADMIN_WEBHOOK_URL (에러 알림)",
+            value=env.get("SLACK_ADMIN_WEBHOOK_URL", ""),
+            type="password", disabled=is_cloud,
+        )
+
+    with st.expander("이메일 (Slack 안 쓸 때만)"):
+        c1, c2 = st.columns(2)
+        smtp_user = c1.text_input("SMTP_USER (Gmail)", value=env.get("SMTP_USER", ""), disabled=is_cloud)
+        smtp_pw = c2.text_input("SMTP_APP_PASSWORD", value=env.get("SMTP_APP_PASSWORD", ""), type="password", disabled=is_cloud)
+        notify_to = st.text_input("NOTIFY_TO", value=env.get("NOTIFY_TO", ""), disabled=is_cloud)
+        notify_admin = st.text_input("NOTIFY_ADMIN", value=env.get("NOTIFY_ADMIN", ""), disabled=is_cloud)
 
     st.subheader("동작 옵션")
     c1, c2, c3 = st.columns(3)
-    lookback = c1.number_input("LOOKBACK_HOURS (몇 시간 전부터)", min_value=1, max_value=720, value=int(env.get("LOOKBACK_HOURS") or 48))
-    delay = c2.number_input("REQUEST_DELAY_SEC (요청 간 대기, 초)", min_value=0.0, max_value=10.0, value=float(env.get("REQUEST_DELAY_SEC") or 1.0), step=0.5)
-    timeout = c3.number_input("HTTP_TIMEOUT_SEC", min_value=5, max_value=120, value=int(float(env.get("HTTP_TIMEOUT_SEC") or 15)))
+    lookback = c1.number_input("LOOKBACK_HOURS", min_value=1, max_value=720,
+                                value=int(env.get("LOOKBACK_HOURS") or 720), disabled=is_cloud)
+    delay = c2.number_input("REQUEST_DELAY_SEC", min_value=0.0, max_value=10.0,
+                             value=float(env.get("REQUEST_DELAY_SEC") or 0.3), step=0.1, disabled=is_cloud)
+    timeout = c3.number_input("HTTP_TIMEOUT_SEC", min_value=5, max_value=120,
+                               value=int(float(env.get("HTTP_TIMEOUT_SEC") or 15)), disabled=is_cloud)
 
     c1, c2 = st.columns([1, 1])
-    if c1.button("💾 저장", type="primary"):
+    if not is_cloud and c1.button("💾 저장 (로컬 .env)", type="primary"):
         write_env({
-            "SLACK_WEBHOOK_URL": slack,
-            "SLACK_ADMIN_WEBHOOK_URL": slack_admin,
+            "SLACK_BOT_TOKEN": bot_token,
+            "SLACK_CHANNEL_BUILDING": ch_b,
+            "SLACK_CHANNEL_CIVIL": ch_c,
+            "SLACK_WEBHOOK_BUILDING": wh_b,
+            "SLACK_WEBHOOK_CIVIL": wh_c,
+            "SLACK_WEBHOOK_URL": wh_url,
+            "SLACK_ADMIN_WEBHOOK_URL": wh_admin,
             "SMTP_USER": smtp_user,
             "SMTP_APP_PASSWORD": smtp_pw,
             "NOTIFY_TO": notify_to,
@@ -688,27 +733,26 @@ def page_notify() -> None:
             "REQUEST_DELAY_SEC": str(delay),
             "HTTP_TIMEOUT_SEC": str(timeout),
         })
-        st.success("저장 완료 — 다음 실행부터 적용됩니다.")
+        st.success("로컬 .env 저장 완료 — 다음 cron 실행부터 적용됩니다.")
 
-    if c2.button("📤 테스트 알림 보내기"):
+    if c2.button("📤 테스트 알림 보내기 (건축 채널)"):
         try:
-            # 방금 저장한 env를 다시 로드해서 사용
-            for k, v in {
-                "SLACK_WEBHOOK_URL": slack, "SLACK_ADMIN_WEBHOOK_URL": slack_admin,
-                "SMTP_USER": smtp_user, "SMTP_APP_PASSWORD": smtp_pw,
-                "NOTIFY_TO": notify_to, "NOTIFY_ADMIN": notify_admin,
-            }.items():
-                os.environ[k] = v or ""
             cfg = load_config()
             sample = [{
                 "site_name": "테스트 발주청",
-                "title": "건설공사 안전점검 수행기관 지정 공고 (대시보드 테스트)",
+                "title": "[대시보드 테스트] 건설공사 안전점검 수행기관 지정 공고",
+                "category": "건축",
                 "deadline_at": datetime.now().isoformat(timespec="seconds"),
                 "estimated_price": 12_500_000,
                 "url": "https://example.go.kr/board/view?id=1",
+                "extracted_fields": {
+                    "scale": "테스트용 샘플 카드",
+                    "bid_period": "테스트",
+                    "contractor": "(테스트)",
+                },
             }]
             notify_new_postings(cfg, sample)
-            st.success("발송 완료 — Slack 채널/이메일 수신함을 확인하세요.")
+            st.success("발송 시도 완료 — 건축 Slack 채널을 확인하세요.")
         except Exception as exc:
             st.error(f"발송 실패: {exc}")
 
