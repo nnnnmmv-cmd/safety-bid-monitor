@@ -921,25 +921,52 @@ def page_status() -> None:
     except Exception as e:
         c1.metric("Supabase", "에러", delta=str(e)[:30], delta_color="inverse")
 
-    # openclaw LLM proxy
-    try:
-        proxy_url = os.getenv("OPENCLAW_PROXY_URL", "http://localhost:3456/v1/chat/completions")
-        r = _requests.post(
-            proxy_url,
-            json={"model": "claude-sonnet-4-5", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 5},
-            timeout=8,
-        )
-        content = (r.json().get("choices", [{}])[0].get("message", {}).get("content") or "")
-        if "authentication_error" in content[:200] or "Failed to authenticate" in content[:80]:
-            c2.metric("LLM (Claude)", "인증 만료", delta="/login 필요", delta_color="inverse")
-        elif r.status_code == 200 and content:
-            c2.metric("LLM (Claude)", "정상", delta="OK")
-        else:
-            c2.metric("LLM (Claude)", "이상", delta=f"HTTP {r.status_code}", delta_color="inverse")
-    except _requests.ConnectionError:
-        c2.metric("LLM (Claude)", "proxy 미가동", delta="openclaw 확인", delta_color="inverse")
-    except Exception as e:
-        c2.metric("LLM (Claude)", "에러", delta=str(e)[:30], delta_color="inverse")
+    # LLM 상태 — proxy는 맥북 localhost라 Streamlit Cloud에서 직접 ping 불가.
+    # ① 로컬(맥북)에서 보는 경우: localhost ping 시도 → 인증 만료 직접 감지.
+    # ② Streamlit Cloud에서 보는 경우: DB의 최근 발송 공고들의 LLM 추출 성공률로 간접 판단.
+    llm_status_set = False
+    proxy_url = os.getenv("OPENCLAW_PROXY_URL", "http://localhost:3456/v1/chat/completions")
+    if "localhost" in proxy_url or "127.0.0.1" in proxy_url:
+        try:
+            r = _requests.post(
+                proxy_url,
+                json={"model": "claude-sonnet-4-5", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 5},
+                timeout=4,
+            )
+            content = (r.json().get("choices", [{}])[0].get("message", {}).get("content") or "")
+            if "authentication_error" in content[:200] or "Failed to authenticate" in content[:80]:
+                c2.metric("LLM (Claude)", "인증 만료", delta="/login 필요", delta_color="inverse")
+                llm_status_set = True
+            elif r.status_code == 200 and content:
+                c2.metric("LLM (Claude)", "정상", delta="proxy OK")
+                llm_status_set = True
+        except _requests.RequestException:
+            pass  # 로컬이 아닌 환경(Streamlit Cloud) — DB 기반 폴백으로 진행
+
+    if not llm_status_set:
+        # 폴백: DB 최근 24시간 발송 공고의 LLM 추출 평균
+        try:
+            cutoff_llm = (datetime.now() - timedelta(hours=24)).isoformat()
+            llm_res = store.client().table("bids").select(
+                "inspection_cost, contractor, scale, bid_period, evaluation_method, low_bid_rate, winner_selection"
+            ).gte("fetched_at", cutoff_llm).limit(50).execute()
+            scores = []
+            for r in (llm_res.data or []):
+                non_empty = sum(1 for k in (
+                    "inspection_cost", "contractor", "scale", "bid_period",
+                    "evaluation_method", "low_bid_rate", "winner_selection",
+                ) if (r.get(k) or "").strip())
+                scores.append(non_empty)
+            if not scores:
+                c2.metric("LLM (Claude)", "유휴", delta="최근 발송 없음")
+            else:
+                avg = sum(scores) / len(scores)
+                if avg < 1.0:
+                    c2.metric("LLM (Claude)", "이상", delta=f"평균 {avg:.1f}/7 — 인증 의심", delta_color="inverse")
+                else:
+                    c2.metric("LLM (Claude)", "정상", delta=f"평균 {avg:.1f}/7 ({len(scores)}건)")
+        except Exception as e:
+            c2.metric("LLM (Claude)", "확인 불가", delta=str(e)[:30], delta_color="inverse")
 
     # Slack Bot
     bot_token = (env_now.get("SLACK_BOT_TOKEN") or "").strip()
@@ -999,6 +1026,13 @@ def page_status() -> None:
 
     # ─── 3. 사이트별 마지막 수집 상태 ────────────────
     st.subheader("사이트별 마지막 fetch")
+    with st.expander("ℹ️ 상태 의미", expanded=False):
+        st.markdown(
+            "- **✅ OK** : 게시판 페이지를 받고 글 N개를 정상 추출 (안전점검 키워드 매칭은 별개)\n"
+            "- **⚠️ 0건** : 페이지는 받았지만 글이 0개 — 신규 글이 없거나 selector가 안 맞아 행을 못 찾음\n"
+            "- **❌ 실패** : 페이지 자체를 못 받음 (SSL·타임아웃·URL 잘못 등록 등)\n\n"
+            "→ **0건은 항상 문제는 아님**. 어떤 사이트는 list_url에 검색 키워드를 박아둬서 안전점검 신규 글이 없으면 0건이 정상."
+        )
     if log_path.exists() and log_text:
         # 사이트별 가장 최근 "fetched N postings" 또는 "list fetch failed"
         site_status: dict[str, dict[str, Any]] = {}
