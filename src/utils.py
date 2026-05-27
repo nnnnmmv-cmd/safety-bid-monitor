@@ -26,10 +26,20 @@ def parse_date(text: str) -> datetime | None:
             return datetime.strptime(cleaned, pattern)
         except ValueError:
             continue
+    # 4자리 연도 (YYYY.MM.DD / YYYY-MM-DD / YYYY/MM/DD)
     m = re.search(r"(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})", cleaned)
     if m:
         try:
             return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+    # 2자리 연도 (YY.MM.DD) — 경기주택도시공사 등에서 사용. 70 이상이면 1900년대, 미만이면 2000년대.
+    m = re.search(r"\b(\d{2})[.\-/](\d{1,2})[.\-/](\d{1,2})\b", cleaned)
+    if m:
+        yy = int(m.group(1))
+        year = 2000 + yy if yy < 70 else 1900 + yy
+        try:
+            return datetime(year, int(m.group(2)), int(m.group(3)))
         except ValueError:
             return None
     return None

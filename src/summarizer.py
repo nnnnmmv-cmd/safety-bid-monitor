@@ -83,6 +83,37 @@ def is_available() -> bool:
         return False
 
 
+def check_auth() -> tuple[bool, str]:
+    """LLM 실제 호출 → (OK?, 실패 시 사유). Claude Max OAuth 만료 감지용.
+
+    monitor.run_once 시작 시 1회 호출. 만료면 LLM 호출 모두 skip + admin 알림.
+    """
+    try:
+        r = requests.post(
+            OPENCLAW_PROXY_URL,
+            json={
+                "model": OPENCLAW_MODEL,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 5,
+            },
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return False, f"HTTP {r.status_code}: {r.text[:120]}"
+        content = (r.json().get("choices", [{}])[0].get("message", {}).get("content") or "")
+        if (
+            "Failed to authenticate" in content[:80]
+            or "authentication_error" in content[:200]
+            or content.startswith("401")
+        ):
+            return False, "Claude Max OAuth 만료 — /login 필요"
+        return True, ""
+    except requests.RequestException as exc:
+        return False, f"proxy 응답 없음: {exc}"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 def extract_bid_fields(title: str, body: str) -> dict[str, str]:
     """공고 제목+본문에서 7개 필드 추출. 실패 시 모두 빈 문자열."""
     body = (body or "")[:12000]
@@ -106,9 +137,20 @@ def extract_bid_fields(title: str, body: str) -> dict[str, str]:
         logger.warning("LLM 요약 실패 (title=%s...): %s", title[:30], exc)
         return dict(EMPTY_FIELDS)
 
+    # openclaw proxy가 LLM 호출 실패 시 응답을 200 + content에 error 메시지로 흘려보냄
+    # (예: 401 인증 만료). 명시적으로 잡아서 로그.
+    if content and ("401" in content[:80] or "Failed to authenticate" in content[:80] or "authentication_error" in content[:200]):
+        logger.warning("openclaw 인증 실패 (Claude Max OAuth 만료 가능) — 토큰 갱신 필요. raw=%r", content[:200])
+        return dict(EMPTY_FIELDS)
+
     parsed = _extract_json(content)
     if parsed is None:
         logger.warning("LLM JSON 파싱 실패. raw=%r", content[:200])
+        return dict(EMPTY_FIELDS)
+
+    # 응답 자체가 error 객체인 경우 (proxy가 error JSON을 그대로 흘려보냄)
+    if isinstance(parsed, dict) and "error" in parsed and "type" in parsed:
+        logger.warning("LLM 에러 응답: %r", parsed)
         return dict(EMPTY_FIELDS)
 
     result = dict(EMPTY_FIELDS)

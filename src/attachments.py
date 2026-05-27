@@ -15,11 +15,27 @@ from typing import Any
 
 import requests
 
+from .adapters.base import _LegacyHTTPSAdapter
+
 logger: logging.Logger = logging.getLogger(__name__)
 
 # Slack files.upload v2는 50MB 제한이지만, 안전점검 첨부는 보통 1-5MB.
 # 너무 큰 파일은 스킵 (소요시간 + 메모리 안전).
 MAX_FILE_BYTES: int = 30 * 1024 * 1024  # 30MB
+
+# legacy SSL 한국 정부 사이트(예: www.anyang.go.kr, www.yongin.go.kr) 호환 세션.
+# requests.get()을 직접 쓰면 SSLV3_ALERT_HANDSHAKE_FAILURE — base.Adapter와 동일 어댑터 mount 필요.
+_legacy_session_cache: requests.Session | None = None
+
+
+def _legacy_session() -> requests.Session:
+    global _legacy_session_cache
+    if _legacy_session_cache is None:
+        s = requests.Session()
+        s.mount("https://", _LegacyHTTPSAdapter())
+        s.verify = False  # 한국 정부 사이트 SSL 체인 누락 대응 (base.Adapter와 동일)
+        _legacy_session_cache = s
+    return _legacy_session_cache
 
 HWP_EXTS: frozenset[str] = frozenset({".hwp", ".hwpx"})
 CONVERTIBLE_EXTS: frozenset[str] = frozenset({".hwp", ".hwpx", ".doc", ".docx", ".xls", ".xlsx"})
@@ -34,17 +50,65 @@ def _sanitize_filename(name: str) -> str:
     return name[:200] or "file"
 
 
+def _fix_extension_from_url(name_hint: str, url: str) -> str:
+    # URL의 query/path에서 실제 확장자 찾아 name_hint와 다르면 교체.
+    # name_hint='15).hwp' + url='...sfn=83471_1.hwpx' → '15).hwpx'
+    from urllib.parse import urlparse, parse_qs
+    try:
+        parsed = urlparse(url)
+        # query에서 파일명 후보
+        candidates: list[str] = []
+        qs = parse_qs(parsed.query)
+        for k in ("sfn", "user_file_nm", "fileName", "fileNm", "file_name"):
+            if qs.get(k):
+                candidates.append(qs[k][0])
+        candidates.append(parsed.path)  # path 자체
+        for cand in candidates:
+            if "." in cand:
+                actual_ext = cand.rsplit(".", 1)[-1].lower().split("?")[0][:5]
+                if not actual_ext or len(actual_ext) > 5:
+                    continue
+                hint_ext = name_hint.rsplit(".", 1)[-1].lower() if "." in name_hint else ""
+                if hint_ext != actual_ext and actual_ext in {"hwp", "hwpx", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "zip"}:
+                    base = name_hint.rsplit(".", 1)[0] if "." in name_hint else name_hint
+                    return f"{base}.{actual_ext}"
+                break
+    except Exception:
+        pass
+    return name_hint
+
+
+def _ascii_safe_url(u: str) -> str:
+    # HTTP 헤더(Referer)나 URL에 percent-encoded되지 않은 한글이 들어오면
+    # requests/urllib3가 latin-1 인코딩 시도하다 UnicodeEncodeError 발생.
+    # 한국 정부 사이트는 list URL의 searchKrwd 등에 한글이 그대로 박힌 경우가 흔함.
+    if not u:
+        return u
+    try:
+        u.encode("latin-1")
+        return u
+    except UnicodeEncodeError:
+        from urllib.parse import quote
+        # %는 safe에 포함 — 이미 percent-encoded된 부분 보존
+        return quote(u, safe="/:?&=#%+,;@")
+
+
 def download_attachment(url: str, dest_dir: Path, name_hint: str, referer: str = "") -> Path | None:
     """첨부파일 다운로드. 실패 시 None.
 
     name_hint(우리가 a 태그에서 추출한 정확한 파일명)를 우선 사용.
     Content-Disposition은 한글 인코딩 (EUC-KR을 Latin-1로 읽어서) 깨지는 케이스가 많아 fallback.
     """
+    url = _ascii_safe_url(url)
     headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36"}
     if referer:
-        headers["Referer"] = referer
+        headers["Referer"] = _ascii_safe_url(referer)
+
+    # name_hint의 확장자가 URL query의 실제 파일명 확장자와 다르면 URL 우선 보정.
+    # 안양시처럼 a 태그 text가 잘려서 "15).hwp"로 들어오는데 실제는 ".hwpx"인 경우.
+    name_hint = _fix_extension_from_url(name_hint, url)
     try:
-        with requests.get(url, headers=headers, timeout=60, stream=True) as r:
+        with _legacy_session().get(url, headers=headers, timeout=60, stream=True) as r:
             r.raise_for_status()
             final_name = _sanitize_filename(name_hint or "download.bin")
             dest_dir.mkdir(parents=True, exist_ok=True)
@@ -111,15 +175,16 @@ def convert_to_pdf(src: Path) -> Path | None:
 
 
 def prepare_for_upload(url: str, name_hint: str, referer: str, work_dir: Path) -> tuple[Path | None, Path | None]:
-    """다운로드 + (HWP면) PDF 변환. (원본 경로, PDF 경로) 반환."""
+    """다운로드 + (HWP/HWPX면) PDF 변환. (원본 경로, PDF 경로) 반환."""
     src = download_attachment(url, work_dir, name_hint, referer)
     if src is None:
         return None, None
-    if src.suffix.lower() == ".hwp":
-        # 1차: LibreOffice (보통 막힘) → 2차: pyhwp + reportlab
+    ext = src.suffix.lower()
+    if ext in (".hwp", ".hwpx"):
+        # 1차: LibreOffice (보통 막힘) → 2차: pyhwp/zipfile + reportlab
         pdf = convert_to_pdf(src) or hwp_to_text_pdf(src, title=src.stem)
         return src, pdf
-    if src.suffix.lower() == ".pdf":
+    if ext == ".pdf":
         return src, src
     return src, convert_to_pdf(src)
 
@@ -165,7 +230,7 @@ HWP5TXT: str = shutil.which("hwp5txt") or str(Path(__file__).resolve().parent.pa
 
 def extract_hwp_text(hwp_path: Path) -> str:
     """pyhwp로 .hwp 파일에서 텍스트 직접 추출 (LibreOffice/Java 의존 없음).
-    .hwpx는 미지원 (다른 포맷)."""
+    .hwpx는 미지원 (다른 포맷 — extract_hwpx_text 사용)."""
     if not hwp_path or not hwp_path.exists() or hwp_path.suffix.lower() != ".hwp":
         return ""
     try:
@@ -180,6 +245,34 @@ def extract_hwp_text(hwp_path: Path) -> str:
         return ""
 
 
+def extract_hwpx_text(hwpx_path: Path) -> str:
+    """.hwpx (ZIP+XML 기반)에서 텍스트 추출. 표준 라이브러리만 사용.
+    section?.xml 안의 텍스트 노드를 단순 추출 — 표·이미지 위치는 손실.
+    """
+    if not hwpx_path or not hwpx_path.exists() or hwpx_path.suffix.lower() != ".hwpx":
+        return ""
+    try:
+        import zipfile
+        with zipfile.ZipFile(hwpx_path) as z:
+            sections = sorted(
+                n for n in z.namelist()
+                if n.startswith("Contents/section") and n.endswith(".xml")
+            )
+            texts: list[str] = []
+            for name in sections:
+                with z.open(name) as f:
+                    content = f.read().decode("utf-8", errors="ignore")
+                # XML 태그 사이 텍스트만 추출. 빈/공백/숫자만 짧은 토큰 필터링.
+                for m in re.finditer(r">([^<]+)<", content):
+                    t = m.group(1).strip()
+                    if t and len(t) >= 1:
+                        texts.append(t)
+            return "\n".join(texts)
+    except Exception as exc:
+        logger.debug("[attachment] HWPX 텍스트 추출 실패 (%s): %s", hwpx_path.name, exc)
+        return ""
+
+
 def extract_attachment_text(file_path: Path) -> str:
     """파일 확장자에 따라 적절한 텍스트 추출 함수 호출."""
     if not file_path or not file_path.exists():
@@ -189,6 +282,8 @@ def extract_attachment_text(file_path: Path) -> str:
         return extract_pdf_text(file_path)
     if ext == ".hwp":
         return extract_hwp_text(file_path)
+    if ext == ".hwpx":
+        return extract_hwpx_text(file_path)
     return ""
 
 
@@ -197,12 +292,15 @@ KO_FONT_PATH: str = "/System/Library/Fonts/AppleSDGothicNeo.ttc"
 
 
 def hwp_to_text_pdf(hwp_path: Path, title: str = "") -> Path | None:
-    """HWP를 pyhwp 텍스트 → reportlab PDF로 변환.
+    """HWP/HWPX를 텍스트 추출 → reportlab PDF로 변환.
     표·이미지는 손실되지만 모바일에서도 텍스트 본문 확인 가능. LibreOffice/Java 의존 X.
     """
-    if not hwp_path or not hwp_path.exists() or hwp_path.suffix.lower() != ".hwp":
+    if not hwp_path or not hwp_path.exists():
         return None
-    text = extract_hwp_text(hwp_path)
+    ext = hwp_path.suffix.lower()
+    if ext not in (".hwp", ".hwpx"):
+        return None
+    text = extract_hwp_text(hwp_path) if ext == ".hwp" else extract_hwpx_text(hwp_path)
     if not text.strip():
         return None
     pdf_path = hwp_path.with_suffix(".pdf")

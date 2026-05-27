@@ -183,6 +183,7 @@ if st.sidebar.button("🚪 로그아웃", use_container_width=True):
 st.sidebar.divider()
 
 ADMIN_PAGES: list[str] = [
+    "🩺 시스템 상태",
     "📋 공고 목록",
     "📒 발주청 명부",
     "🔍 키워드 관리",
@@ -192,6 +193,7 @@ ADMIN_PAGES: list[str] = [
     "👥 사용자 관리",
 ]
 VIEWER_PAGES: list[str] = [
+    "🩺 시스템 상태",
     "📋 공고 목록",
     "📒 발주청 명부",
 ]
@@ -886,9 +888,202 @@ def page_users() -> None:
                 st.rerun()
 
 
+def page_status() -> None:
+    """시스템 상태창 — 외부 의존성, 최근 cron, 사이트 fetch 통계, 이상 공고."""
+    from datetime import datetime, timedelta
+    import re as _re
+    import requests as _requests
+
+    st.title("🩺 시스템 상태")
+
+    # 자동 새로고침 토글 (Streamlit Cloud에서도 동작)
+    ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 4])
+    auto = ctrl1.toggle("자동 새로고침", value=False, help="활성화 시 일정 주기로 페이지 자동 갱신")
+    interval_sec = ctrl2.selectbox("주기(초)", [15, 30, 60, 120, 300], index=2, disabled=not auto)
+    if auto:
+        try:
+            from streamlit_autorefresh import st_autorefresh
+            st_autorefresh(interval=int(interval_sec) * 1000, key="status_autorefresh")
+            ctrl3.caption(f"⏱ {interval_sec}초마다 자동 갱신 중")
+        except ImportError:
+            ctrl3.warning("`streamlit-autorefresh` 패키지가 설치 안 됨")
+
+    st.caption(f"마지막 확인 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # ─── 1. 외부 의존성 ──────────────────────────────
+    st.subheader("외부 의존성")
+    c1, c2, c3, c4 = st.columns(4)
+
+    # Supabase
+    try:
+        store.list_sites()
+        c1.metric("Supabase", "정상", delta="OK")
+    except Exception as e:
+        c1.metric("Supabase", "에러", delta=str(e)[:30], delta_color="inverse")
+
+    # openclaw LLM proxy
+    try:
+        proxy_url = os.getenv("OPENCLAW_PROXY_URL", "http://localhost:3456/v1/chat/completions")
+        r = _requests.post(
+            proxy_url,
+            json={"model": "claude-sonnet-4-5", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 5},
+            timeout=8,
+        )
+        content = (r.json().get("choices", [{}])[0].get("message", {}).get("content") or "")
+        if "authentication_error" in content[:200] or "Failed to authenticate" in content[:80]:
+            c2.metric("LLM (Claude)", "인증 만료", delta="/login 필요", delta_color="inverse")
+        elif r.status_code == 200 and content:
+            c2.metric("LLM (Claude)", "정상", delta="OK")
+        else:
+            c2.metric("LLM (Claude)", "이상", delta=f"HTTP {r.status_code}", delta_color="inverse")
+    except _requests.ConnectionError:
+        c2.metric("LLM (Claude)", "proxy 미가동", delta="openclaw 확인", delta_color="inverse")
+    except Exception as e:
+        c2.metric("LLM (Claude)", "에러", delta=str(e)[:30], delta_color="inverse")
+
+    # Slack Bot
+    bot_token = (env_now.get("SLACK_BOT_TOKEN") or "").strip()
+    if bot_token:
+        try:
+            from slack_sdk import WebClient
+            r = WebClient(token=bot_token).auth_test()
+            if r.get("ok"):
+                c3.metric("Slack Bot", "정상", delta=f"@{r.get('user','')}")
+            else:
+                c3.metric("Slack Bot", "에러", delta="auth_test 실패", delta_color="inverse")
+        except Exception as e:
+            c3.metric("Slack Bot", "에러", delta=str(e)[:30], delta_color="inverse")
+    else:
+        c3.metric("Slack Bot", "미설정", delta="Bot Token 없음", delta_color="inverse")
+
+    # 사이트 카운트
+    sites_all = store.list_sites()
+    enabled = [s for s in sites_all if s.get("enabled")]
+    c4.metric("활성 사이트", f"{len(enabled)} / {len(sites_all)}")
+
+    st.divider()
+
+    # ─── 2. 최근 cron 실행 ────────────────────────────
+    st.subheader("최근 cron 실행")
+    log_path = Path("logs/monitor.log")
+    if log_path.exists():
+        try:
+            log_text = log_path.read_text(encoding="utf-8", errors="ignore")[-50000:]
+        except Exception:
+            log_text = ""
+        # "총 fetched=N inserted=N" 패턴이 한 cron의 마무리 — 최근 5건
+        cron_rows: list[dict[str, Any]] = []
+        for m in _re.finditer(
+            r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+ \[INFO\] safetybid: 총 fetched=(\d+) inserted=(\d+).*$",
+            log_text, _re.MULTILINE,
+        ):
+            cron_rows.append({"시각": m.group(1), "fetched": int(m.group(2)), "inserted": int(m.group(3))})
+        if cron_rows:
+            df = pd.DataFrame(cron_rows[-8:][::-1])
+            st.dataframe(df, hide_index=True, use_container_width=True)
+        else:
+            st.info("최근 cron 실행 기록을 찾지 못했습니다.")
+        # 최근 에러/경고
+        warn_lines = [
+            ln for ln in log_text.splitlines()[-500:]
+            if ("[WARNING]" in ln or "[ERROR]" in ln) and "list fetch failed" not in ln
+        ][-10:]
+        if warn_lines:
+            with st.expander(f"⚠ 최근 경고 {len(warn_lines)}건", expanded=False):
+                for ln in warn_lines:
+                    st.code(ln, language=None)
+    else:
+        st.info("monitor.log 파일이 아직 생성되지 않았습니다.")
+
+    st.divider()
+
+    # ─── 3. 사이트별 마지막 수집 상태 ────────────────
+    st.subheader("사이트별 마지막 fetch")
+    if log_path.exists() and log_text:
+        # 사이트별 가장 최근 "fetched N postings" 또는 "list fetch failed"
+        site_status: dict[str, dict[str, Any]] = {}
+        for m in _re.finditer(
+            r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+ \[(INFO|WARNING)\] src\.adapters\.egov: \[([^\]]+)\] (fetched (\d+) postings|list fetch failed.*)$",
+            log_text, _re.MULTILINE,
+        ):
+            ts, level, name, msg, cnt = m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)
+            site_status[name] = {
+                "시각": ts,
+                "raw": int(cnt) if cnt else 0,
+                "상태": "OK" if level == "INFO" and cnt and int(cnt) > 0 else ("0건" if level == "INFO" else "실패"),
+            }
+        if site_status:
+            # category 매핑
+            cat_map = {s["name"]: s.get("category", "") for s in enabled}
+            rows = []
+            for name, info in sorted(site_status.items()):
+                rows.append({
+                    "사이트": name,
+                    "카테고리": cat_map.get(name, "(비활성)"),
+                    "상태": info["상태"],
+                    "raw": info["raw"],
+                    "최근 시각": info["시각"][-8:],
+                })
+            df2 = pd.DataFrame(rows)
+            ok = (df2["상태"] == "OK").sum()
+            zero = (df2["상태"] == "0건").sum()
+            fail = (df2["상태"] == "실패").sum()
+            cA, cB, cC = st.columns(3)
+            cA.metric("✅ OK", ok)
+            cB.metric("⚠️ 0건", zero)
+            cC.metric("❌ 실패", fail)
+            # 필터
+            f_status = st.multiselect("상태 필터", ["OK", "0건", "실패"], default=["0건", "실패"])
+            if f_status:
+                df2 = df2[df2["상태"].isin(f_status)]
+            st.dataframe(df2, hide_index=True, use_container_width=True, height=400)
+        else:
+            st.info("사이트 fetch 기록을 찾지 못했습니다. monitor cron이 한 번 이상 실행되어야 합니다.")
+    else:
+        st.info("로그가 비어 있습니다.")
+
+    st.divider()
+
+    # ─── 4. 이상 공고 (LLM 0/7 또는 첨부 0개) ────────
+    st.subheader("최근 이상 공고")
+    try:
+        client = store.client()
+        cutoff = (datetime.now() - timedelta(days=7)).isoformat()
+        res = client.table("bids").select(
+            "notice_id, site_name, title, posted_at, fetched_at, "
+            "inspection_cost, contractor, scale, bid_period, evaluation_method, low_bid_rate, winner_selection"
+        ).gte("fetched_at", cutoff).order("fetched_at", desc=True).limit(200).execute()
+        odd_rows: list[dict[str, Any]] = []
+        for r in (res.data or []):
+            non_empty = sum(1 for k in (
+                "inspection_cost", "contractor", "scale", "bid_period",
+                "evaluation_method", "low_bid_rate", "winner_selection",
+            ) if (r.get(k) or "").strip())
+            if non_empty <= 2:
+                odd_rows.append({
+                    "사이트": r.get("site_name", ""),
+                    "제목": (r.get("title") or "")[:50],
+                    "LLM 필드": f"{non_empty}/7",
+                    "수집": (r.get("fetched_at") or "")[:16],
+                })
+        if odd_rows:
+            st.warning(f"최근 7일 LLM 추출 ≤2/7 공고: {len(odd_rows)}건")
+            st.dataframe(pd.DataFrame(odd_rows[:30]), hide_index=True, use_container_width=True)
+        else:
+            st.success("최근 7일 모든 공고가 정상 추출됨 (3/7 이상).")
+    except Exception as e:
+        st.error(f"이상 공고 조회 실패: {e}")
+
+    st.divider()
+    if st.button("🔄 새로고침", use_container_width=True):
+        st.rerun()
+
+
 # ---------- 라우팅 ----------
 
-if page == "📋 공고 목록":
+if page == "🩺 시스템 상태":
+    page_status()
+elif page == "📋 공고 목록":
     page_bids()
 elif page == "📒 발주청 명부":
     page_roster()

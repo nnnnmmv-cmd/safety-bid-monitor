@@ -36,6 +36,39 @@ class BidPosting:
     attachments: list[Attachment] = field(default_factory=list)
 
 
+import ssl
+import urllib3
+from urllib3 import PoolManager
+from requests.adapters import HTTPAdapter
+
+# 한국 정부 사이트 인증서 체인 누락이 많아 verify=False로 쓰는데, 그 경고 노이즈 차단.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+class _LegacyHTTPSAdapter(HTTPAdapter):
+    """오래된 SSL/TLS만 지원하는 한국 정부 사이트 호환용.
+
+    1) cipher SECLEVEL 완화 — 안양·용인 등 SSLV3_ALERT_HANDSHAKE_FAILURE 대응
+    2) OP_LEGACY_SERVER_CONNECT — TLS 1.2 미만 사이트
+    3) 인증서 체인 검증 끔 — 성남·의정부·이천·평택도시공사 CERTIFICATE_VERIFY_FAILED 대응
+       (전부 공공 도메인이라 MITM 위험은 실무상 낮음)
+    """
+
+    def init_poolmanager(self, connections: int, maxsize: int, block: bool = False, **pool_kwargs):  # type: ignore[no-untyped-def]
+        ctx = ssl.create_default_context()
+        ctx.set_ciphers("DEFAULT@SECLEVEL=1")
+        try:
+            ctx.options |= 0x4  # OP_LEGACY_SERVER_CONNECT
+        except Exception:
+            pass
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        self.poolmanager = PoolManager(
+            num_pools=connections, maxsize=maxsize, block=block,
+            ssl_context=ctx, **pool_kwargs,
+        )
+
+
 class Adapter(ABC):
     def __init__(self, site: SiteConfig, runtime: RuntimeConfig) -> None:
         self.site = site
@@ -43,6 +76,9 @@ class Adapter(ABC):
         # monitor가 주입하는 사전 매칭용 키워드 — title 매칭 안 되면 detail fetch 스킵
         self.prefilter_titles: list[str] = []
         self.session = requests.Session()
+        # legacy SSL 한국 정부 사이트 대응 — cipher/verify 완화
+        self.session.mount("https://", _LegacyHTTPSAdapter())
+        self.session.verify = False
         self.session.headers.update(
             {
                 "User-Agent": (

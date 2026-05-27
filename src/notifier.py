@@ -177,6 +177,20 @@ def _render_one_card(item: dict[str, object]) -> list[str]:
     if url:
         lines.append("")
         lines.append(f"🔗 <{url}|공고 원문 보기>")
+
+    # 첨부 원본 다운로드 링크 (정부 사이트 직접 URL)
+    # 슬랙 워크스페이스 정책으로 봇이 채널에 파일 attach 못 하는 케이스가 있어,
+    # 메시지 본문에 원본 URL을 박아둠 → 사용자가 슬랙에서 직접 다운로드 가능.
+    attachments_raw = item.get("attachments_raw") or []
+    if isinstance(attachments_raw, list) and attachments_raw:
+        lines.append("")
+        lines.append("📎 *첨부파일 (원본)*")
+        for a in attachments_raw[:10]:
+            if isinstance(a, dict):
+                name = str(a.get("name") or "")[:80]
+                a_url = str(a.get("url") or "")
+                if name and a_url:
+                    lines.append(f"  • <{a_url}|{_slack_escape(name)}>")
     return lines
 
 
@@ -276,11 +290,35 @@ def send_card_with_attachments(
         resp = client.chat_postMessage(channel=channel_id, text=card_text, mrkdwn=True)
         ts = resp.get("ts")
         if file_paths and ts:
-            uploads = [{"file": str(f), "filename": f.name} for f in file_paths if f and f.exists()]
+            # channel·thread_ts를 함수 인자로만 주면 slack_sdk 일부 버전이
+            # completeUploadExternal 단계에서 채널/thread를 누락해서, 파일은 업로드되지만
+            # 채널 thread에 첨부가 안 붙는 케이스가 있음. → file_uploads 각 항목에도 명시.
+            uploads = [
+                {
+                    "file": str(f),
+                    "filename": f.name,
+                    "channel": channel_id,
+                    "thread_ts": ts,
+                }
+                for f in file_paths if f and f.exists()
+            ]
             if uploads:
-                up = client.files_upload_v2(channel=channel_id, thread_ts=ts, file_uploads=uploads)
-                if not up.get("ok"):
-                    logger.warning("Slack 파일 업로드 응답 ok=False: %s", up.data)
+                try:
+                    up = client.files_upload_v2(
+                        channel=channel_id,
+                        thread_ts=ts,
+                        file_uploads=uploads,
+                    )
+                    if not up.get("ok"):
+                        logger.warning("Slack 파일 업로드 ok=False (%s): %s", channel_id, up.data)
+                    else:
+                        info = [
+                            f"{fr.get('name')}→{fr.get('id')}(channels={fr.get('channels')})"
+                            for fr in (up.get("files") or [])
+                        ]
+                        logger.info("Slack 파일 업로드 OK (%s, ts=%s): %s", channel_id, ts, info)
+                except Exception as ex:
+                    logger.warning("Slack 파일 업로드 예외 (%s): %s", channel_id, ex)
         return True
     except Exception as exc:
         logger.warning("Slack Bot 발송 실패 (%s): %s", channel_id, exc)
