@@ -944,30 +944,44 @@ def page_status() -> None:
             pass  # 로컬이 아닌 환경(Streamlit Cloud) — DB 기반 폴백으로 진행
 
     if not llm_status_set:
-        # 폴백: DB 최근 24시간 발송 공고의 LLM 추출 평균
+        # 폴백: DB 최근 3일 발송 공고의 LLM 추출 분포
         # 7개 필드는 bids.extracted_fields (jsonb) 컬럼 하나에 통째로 저장됨.
+        # 24h → 72h로 확장 — Streamlit Cloud UTC/KST 차이로 윈도우가 좁아지는 케이스 보완.
         _LLM_KEYS = ("inspection_cost", "contractor", "scale", "bid_period",
                      "evaluation_method", "low_bid_rate", "winner_selection")
         try:
-            cutoff_llm = (datetime.now() - timedelta(hours=24)).isoformat()
+            cutoff_llm = (datetime.now() - timedelta(hours=72)).isoformat()
             llm_res = store.client().table("bids").select(
                 "extracted_fields"
-            ).gte("fetched_at", cutoff_llm).limit(50).execute()
-            scores = []
+            ).gte("fetched_at", cutoff_llm).limit(100).execute()
+            scores: list[int] = []
+            null_count = 0
             for r in (llm_res.data or []):
-                ef = r.get("extracted_fields") or {}
-                if not isinstance(ef, dict):
+                ef = r.get("extracted_fields")
+                if ef is None or not isinstance(ef, dict):
+                    scores.append(0)
+                    null_count += 1
                     continue
                 non_empty = sum(1 for k in _LLM_KEYS if (ef.get(k) or "").strip())
                 scores.append(non_empty)
-            if not scores:
+                if non_empty == 0:
+                    null_count += 1
+            total = len(scores)
+            if total == 0:
                 c2.metric("LLM (Claude)", "유휴", delta="최근 발송 없음")
             else:
-                avg = sum(scores) / len(scores)
-                if avg < 1.0:
-                    c2.metric("LLM (Claude)", "이상", delta=f"평균 {avg:.1f}/7 — 인증 의심", delta_color="inverse")
+                avg = sum(scores) / total
+                null_ratio = null_count / total
+                # 90% 이상 NULL이면 진짜 인증 문제 의심, 일부 추출 있으면 본문 부족
+                if total >= 3 and null_ratio >= 0.9:
+                    c2.metric("LLM (Claude)", "인증 의심",
+                              delta=f"NULL {null_count}/{total}건", delta_color="inverse")
+                elif avg < 1.5:
+                    c2.metric("LLM (Claude)", "본문 부족",
+                              delta=f"평균 {avg:.1f}/7 ({total}건, NULL {null_count})", delta_color="off")
                 else:
-                    c2.metric("LLM (Claude)", "정상", delta=f"평균 {avg:.1f}/7 ({len(scores)}건)")
+                    c2.metric("LLM (Claude)", "정상",
+                              delta=f"평균 {avg:.1f}/7 ({total}건)")
         except Exception as e:
             c2.metric("LLM (Claude)", "확인 불가", delta=str(e)[:50], delta_color="inverse")
 
