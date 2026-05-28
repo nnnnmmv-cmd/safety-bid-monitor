@@ -27,6 +27,13 @@ SITE_PRICE_CAP: dict[str, int] = {
 }
 
 
+def _notify_disabled() -> bool:
+    # .env의 NOTIFY_DISABLED=true 면 슬랙 발송 일시 중지.
+    # 크롤링·DB·LLM은 계속 돌고, 발송만 skip → 다시 켜면 보류된 글 한꺼번에 발송.
+    import os
+    return os.getenv("NOTIFY_DISABLED", "").lower() in ("1", "true", "yes")
+
+
 def _setup_logging() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     handler = RotatingFileHandler(LOG_DIR / "monitor.log", maxBytes=2_000_000, backupCount=5, encoding="utf-8")
@@ -133,7 +140,13 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
                 row_for_send["attachments_raw"] = [
                     {"name": a.name, "url": a.url} for a in (posting.attachments or [])[:10]
                 ]
-                if send_one_posting(cfg, row_for_send, file_paths):
+                if _notify_disabled():
+                    # 발송 보류 — notified=False 유지로 다시 켰을 때 누락 없이 받음
+                    logger.info(
+                        "[%s] 발송 보류 (NOTIFY_DISABLED=true): %s",
+                        site.name, record["title"][:30],
+                    )
+                elif send_one_posting(cfg, row_for_send, file_paths):
                     store.mark_notified([record["notice_id"]])
                     logger.info("[%s] 발송 완료: %s (첨부 %d개)", site.name, record["title"][:30], len(file_paths))
                 else:
@@ -207,7 +220,9 @@ def run_once() -> None:
         total_fetched, total_inserted, len(new_rows),
     )
 
-    if new_rows:
+    if new_rows and _notify_disabled():
+        logger.info("NOTIFY_DISABLED=true — fallback 알림 %d건 보류", len(new_rows))
+    elif new_rows:
         try:
             notify_new_postings(cfg, new_rows)
             store.mark_notified([str(r["notice_id"]) for r in new_rows])
