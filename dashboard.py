@@ -945,17 +945,20 @@ def page_status() -> None:
 
     if not llm_status_set:
         # 폴백: DB 최근 24시간 발송 공고의 LLM 추출 평균
+        # 7개 필드는 bids.extracted_fields (jsonb) 컬럼 하나에 통째로 저장됨.
+        _LLM_KEYS = ("inspection_cost", "contractor", "scale", "bid_period",
+                     "evaluation_method", "low_bid_rate", "winner_selection")
         try:
             cutoff_llm = (datetime.now() - timedelta(hours=24)).isoformat()
             llm_res = store.client().table("bids").select(
-                "inspection_cost, contractor, scale, bid_period, evaluation_method, low_bid_rate, winner_selection"
+                "extracted_fields"
             ).gte("fetched_at", cutoff_llm).limit(50).execute()
             scores = []
             for r in (llm_res.data or []):
-                non_empty = sum(1 for k in (
-                    "inspection_cost", "contractor", "scale", "bid_period",
-                    "evaluation_method", "low_bid_rate", "winner_selection",
-                ) if (r.get(k) or "").strip())
+                ef = r.get("extracted_fields") or {}
+                if not isinstance(ef, dict):
+                    continue
+                non_empty = sum(1 for k in _LLM_KEYS if (ef.get(k) or "").strip())
                 scores.append(non_empty)
             if not scores:
                 c2.metric("LLM (Claude)", "유휴", delta="최근 발송 없음")
@@ -966,7 +969,7 @@ def page_status() -> None:
                 else:
                     c2.metric("LLM (Claude)", "정상", delta=f"평균 {avg:.1f}/7 ({len(scores)}건)")
         except Exception as e:
-            c2.metric("LLM (Claude)", "확인 불가", delta=str(e)[:30], delta_color="inverse")
+            c2.metric("LLM (Claude)", "확인 불가", delta=str(e)[:50], delta_color="inverse")
 
     # Slack Bot
     bot_token = (env_now.get("SLACK_BOT_TOKEN") or "").strip()
@@ -1080,19 +1083,20 @@ def page_status() -> None:
 
     # ─── 4. 이상 공고 (LLM 0/7 또는 첨부 0개) ────────
     st.subheader("최근 이상 공고")
+    _LLM_KEYS2 = ("inspection_cost", "contractor", "scale", "bid_period",
+                  "evaluation_method", "low_bid_rate", "winner_selection")
     try:
         client = store.client()
         cutoff = (datetime.now() - timedelta(days=7)).isoformat()
         res = client.table("bids").select(
-            "notice_id, site_name, title, posted_at, fetched_at, "
-            "inspection_cost, contractor, scale, bid_period, evaluation_method, low_bid_rate, winner_selection"
+            "notice_id, site_name, title, posted_at, fetched_at, extracted_fields"
         ).gte("fetched_at", cutoff).order("fetched_at", desc=True).limit(200).execute()
         odd_rows: list[dict[str, Any]] = []
         for r in (res.data or []):
-            non_empty = sum(1 for k in (
-                "inspection_cost", "contractor", "scale", "bid_period",
-                "evaluation_method", "low_bid_rate", "winner_selection",
-            ) if (r.get(k) or "").strip())
+            ef = r.get("extracted_fields") or {}
+            if not isinstance(ef, dict):
+                ef = {}
+            non_empty = sum(1 for k in _LLM_KEYS2 if (ef.get(k) or "").strip())
             if non_empty <= 2:
                 odd_rows.append({
                     "사이트": r.get("site_name", ""),
