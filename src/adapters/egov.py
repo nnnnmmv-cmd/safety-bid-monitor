@@ -45,6 +45,8 @@ _DETAIL_URL_RULES: list[dict[str, str]] = [
     {"list": "selectEminwonList", "detail": "selectEminwonView", "seq_key": "not_ancmt_mgt_no"},
     # 가평군·하남시 등 고시 패턴
     {"list": "selectGosiList", "detail": "selectGosiData", "seq_key": "not_ancmt_mgt_no"},
+    # 의정부·안성 등 saeol/gosiList → gosiView 패턴 (notAncmtMgtNo 키)
+    {"list": "gosiList.do", "detail": "gosiView.do", "seq_key": "notAncmtMgtNo"},
     # 김포시 등
     {"list": "ntfcPblancList", "detail": "ntfcPblancView", "seq_key": "not_ancmt_mgt_no"},
     # 수원시 ofr 패턴
@@ -382,7 +384,8 @@ class EgovAdapter(Adapter):
         """첨부파일 링크 추출. javascript 다운로드 함수 패턴 자동 처리."""
         results: list[Attachment] = []
         seen: set[str] = set()
-        _FILE_EXT = re.compile(r"\.(hwp|hwpx|pdf|docx?|xlsx?|pptx?|zip|jpg|png)\b", re.IGNORECASE)
+        # 이미지 확장자(jpg/png/gif) 제외 — 본문 인라인 이미지(홈 마크 등)가 첨부로 잡히는 노이즈 차단.
+        _FILE_EXT = re.compile(r"\.(hwp|hwpx|pdf|docx?|xlsx?|pptx?|zip)\b", re.IGNORECASE)
         # Synap·OnlineViewer·웹문서뷰어는 HTML 미리보기 페이지 — 파일 아님. 제외.
         # ckeditor 경로(/webcontent/ckeditor/...)는 본문 내 인라인 콘텐츠 — 첨부 아님.
         _PREVIEW_URL = re.compile(
@@ -431,6 +434,13 @@ class EgovAdapter(Adapter):
             user_nm, sys_nm, path = m.group(1), m.group(2), m.group(3)
             base = self._eminwon_download_base(detail_url)
             return f"{base}?user_file_nm={quote(user_nm)}&sys_file_nm={quote(sys_nm)}&file_path={quote(path)}", user_nm
+        # 안산시 fnFileDownLoad('FILE_ID') → /common/file/FileDown.do?file_id=FILE_ID (GET 동작 확인됨)
+        m = re.search(r"fnFileDownLoad\s*\(\s*['\"]([^'\"]+)['\"]", combined, re.IGNORECASE)
+        if m:
+            from urllib.parse import urljoin
+            file_id = m.group(1)
+            base = urljoin(self.site.base_url + "/", "/common/file/FileDown.do")
+            return f"{base}?file_id={quote(file_id)}", self._filename_from_url_or_text("", text)
         # 가평군·김포시 등 ND_fileDownload 패턴
         m = re.search(r"['\"](/[^'\"]*fileDownload[^'\"]*)['\"]", combined, re.IGNORECASE)
         if m:
@@ -467,12 +477,29 @@ class EgovAdapter(Adapter):
                         return name
         except Exception:
             pass
-        # 2) 표시 텍스트에서 .ext 패턴 (수원시: "hwp파일명.hwp" 같은 접두사 제거)
+        # 2) 표시 텍스트에서 파일명 추출
+        # 안산시 a 태그 텍스트: "pdf 문서건설공사 안전점검(건축분야) ... 공고.pdf파일 다운로드 버튼"
+        # → prefix("pdf 문서") + suffix("파일 다운로드 버튼") 제거 후 .확장자까지 자르기
         for source in (text, url):
-            m = re.search(r"([^/\s'\"]+\.(?:hwp|hwpx|pdf|docx?|xlsx?|pptx?|zip))", source, re.IGNORECASE)
+            cleaned = source
+            # prefix "pdf 문서|hwp 문서|hwpx 문서|..." 제거
+            cleaned = re.sub(
+                r"^\s*(pdf|hwp|hwpx|doc|docx|xls|xlsx|ppt|pptx|zip)\s*문서\s*",
+                "", cleaned, flags=re.IGNORECASE,
+            )
+            # 공백 포함 파일명까지 허용해 첫 .확장자에서 자르기
+            m = re.search(
+                r"([^/'\"<>]{1,200}?\.(?:hwp|hwpx|pdf|docx?|xlsx?|pptx?|zip))",
+                cleaned, re.IGNORECASE,
+            )
             if m:
-                name = m.group(1)
-                return re.sub(r"^(hwp|hwpx|pdf|doc|docx|xls|xlsx|ppt|pptx|zip)(?=[가-힣A-Z\(])", "", name)
+                name = m.group(1).strip()
+                # 안산시처럼 앞에 "pdf|hwp..." 접두 그대로 붙은 경우 한 번 더 정리
+                name = re.sub(
+                    r"^(hwp|hwpx|pdf|doc|docx|xls|xlsx|ppt|pptx|zip)(?=[가-힣A-Z\(])",
+                    "", name,
+                )
+                return name
         return (text or url)[:80]
 
     @classmethod

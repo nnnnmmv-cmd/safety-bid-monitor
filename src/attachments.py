@@ -93,11 +93,19 @@ def _ascii_safe_url(u: str) -> str:
         return quote(u, safe="/:?&=#%+,;@")
 
 
-def download_attachment(url: str, dest_dir: Path, name_hint: str, referer: str = "") -> Path | None:
+def download_attachment(
+    url: str,
+    dest_dir: Path,
+    name_hint: str,
+    referer: str = "",
+    session: requests.Session | None = None,
+) -> Path | None:
     """첨부파일 다운로드. 실패 시 None.
 
     name_hint(우리가 a 태그에서 추출한 정확한 파일명)를 우선 사용.
-    Content-Disposition은 한글 인코딩 (EUC-KR을 Latin-1로 읽어서) 깨지는 케이스가 많아 fallback.
+    session: 어댑터가 list/detail에서 쿠키를 받은 세션을 전달하면 그 쿠키로 다운로드.
+             eminwon(용인·수원 등)은 SESSION_NTIS 쿠키 없으면 "잘못된 경로" 거부.
+             None이면 모듈 레벨 legacy session으로 폴백.
     """
     url = _ascii_safe_url(url)
     headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36"}
@@ -107,8 +115,11 @@ def download_attachment(url: str, dest_dir: Path, name_hint: str, referer: str =
     # name_hint의 확장자가 URL query의 실제 파일명 확장자와 다르면 URL 우선 보정.
     # 안양시처럼 a 태그 text가 잘려서 "15).hwp"로 들어오는데 실제는 ".hwpx"인 경우.
     name_hint = _fix_extension_from_url(name_hint, url)
+
+    # session 우선 (어댑터 쿠키 보존), 없으면 모듈 legacy session 폴백
+    sess = session if session is not None else _legacy_session()
     try:
-        with _legacy_session().get(url, headers=headers, timeout=60, stream=True) as r:
+        with sess.get(url, headers=headers, timeout=60, stream=True, verify=False) as r:
             r.raise_for_status()
             final_name = _sanitize_filename(name_hint or "download.bin")
             dest_dir.mkdir(parents=True, exist_ok=True)
@@ -174,9 +185,17 @@ def convert_to_pdf(src: Path) -> Path | None:
         return None
 
 
-def prepare_for_upload(url: str, name_hint: str, referer: str, work_dir: Path) -> tuple[Path | None, Path | None]:
-    """다운로드 + (HWP/HWPX면) PDF 변환. (원본 경로, PDF 경로) 반환."""
-    src = download_attachment(url, work_dir, name_hint, referer)
+def prepare_for_upload(
+    url: str,
+    name_hint: str,
+    referer: str,
+    work_dir: Path,
+    session: requests.Session | None = None,
+) -> tuple[Path | None, Path | None]:
+    """다운로드 + (HWP/HWPX면) PDF 변환. (원본 경로, PDF 경로) 반환.
+    session: 어댑터 쿠키 보존용 — eminwon 등 세션 필요 사이트 대응.
+    """
+    src = download_attachment(url, work_dir, name_hint, referer, session=session)
     if src is None:
         return None, None
     ext = src.suffix.lower()
@@ -226,13 +245,79 @@ def upload_to_slack(
 
 
 HWP5TXT: str = shutil.which("hwp5txt") or str(Path(__file__).resolve().parent.parent / ".venv/bin/hwp5txt")
+HWP5ODT: str = shutil.which("hwp5odt") or str(Path(__file__).resolve().parent.parent / ".venv/bin/hwp5odt")
+
+
+def _extract_hwp_via_odt(hwp_path: Path) -> str:
+    """hwp5odt로 ODT 변환 후 content.xml 텍스트 추출.
+    hwp5txt가 못 잡는 표 셀 내용(시공자·규모·비용 등)까지 포함."""
+    import tempfile, zipfile
+    odt_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".odt", delete=False) as tmp:
+            odt_path = Path(tmp.name)
+        proc = subprocess.run(
+            [HWP5ODT, "--output", str(odt_path), str(hwp_path)],
+            capture_output=True, text=True, timeout=60,
+        )
+        if proc.returncode != 0 or not odt_path.exists():
+            return ""
+        with zipfile.ZipFile(odt_path) as z:
+            if "content.xml" not in z.namelist():
+                return ""
+            content = z.read("content.xml").decode("utf-8", errors="ignore")
+        texts: list[str] = []
+        for m in re.finditer(r">([^<>]+)<", content):
+            t = m.group(1).strip()
+            if t:
+                texts.append(t)
+        return "\n".join(texts)
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as exc:
+        logger.debug("[attachment] hwp5odt 변환 실패 (%s): %s", hwp_path.name, exc)
+        return ""
+    finally:
+        if odt_path is not None:
+            try:
+                odt_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def _detect_file_format(path: Path) -> str:
+    """파일 매직 넘버로 실제 포맷 감지 — 확장자 무관.
+
+    수원시처럼 파일 이름은 .hwpx인데 실제는 OLE Compound(.hwp)인 케이스 대응.
+    반환: 'hwp' / 'hwpx' / 'pdf' / 'zip' / 'unknown'.
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8)
+    except Exception:
+        return "unknown"
+    if head == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        return "hwp"  # OLE Compound Document
+    if head[:4] == b"PK\x03\x04":
+        return "hwpx"  # ZIP-based (실제로는 docx/xlsx/zip일 수도 있지만 hwp 도메인에선 hwpx)
+    if head[:4] == b"%PDF":
+        return "pdf"
+    return "unknown"
 
 
 def extract_hwp_text(hwp_path: Path) -> str:
-    """pyhwp로 .hwp 파일에서 텍스트 직접 추출 (LibreOffice/Java 의존 없음).
-    .hwpx는 미지원 (다른 포맷 — extract_hwpx_text 사용)."""
-    if not hwp_path or not hwp_path.exists() or hwp_path.suffix.lower() != ".hwp":
+    """.hwp 파일에서 텍스트 추출 (확장자 아니라 OLE 매직 넘버로 판별).
+
+    1차: hwp5odt → ODT(ZIP+XML) 변환 후 content.xml에서 추출 — 표 셀까지 포함.
+    2차: hwp5txt 폴백 (본문만, 표는 placeholder).
+    """
+    if not hwp_path or not hwp_path.exists():
         return ""
+    if _detect_file_format(hwp_path) != "hwp":
+        return ""
+    # 1차: ODT 변환 (표 셀 포함)
+    odt_text = _extract_hwp_via_odt(hwp_path)
+    if odt_text.strip():
+        return odt_text
+    # 2차: hwp5txt 폴백
     try:
         proc = subprocess.run(
             [HWP5TXT, str(hwp_path)],
@@ -247,9 +332,12 @@ def extract_hwp_text(hwp_path: Path) -> str:
 
 def extract_hwpx_text(hwpx_path: Path) -> str:
     """.hwpx (ZIP+XML 기반)에서 텍스트 추출. 표준 라이브러리만 사용.
+    매직 넘버(ZIP)로 판별 — 확장자가 .hwp여도 ZIP이면 처리 가능.
     section?.xml 안의 텍스트 노드를 단순 추출 — 표·이미지 위치는 손실.
     """
-    if not hwpx_path or not hwpx_path.exists() or hwpx_path.suffix.lower() != ".hwpx":
+    if not hwpx_path or not hwpx_path.exists():
+        return ""
+    if _detect_file_format(hwpx_path) != "hwpx":
         return ""
     try:
         import zipfile
@@ -274,9 +362,18 @@ def extract_hwpx_text(hwpx_path: Path) -> str:
 
 
 def extract_attachment_text(file_path: Path) -> str:
-    """파일 확장자에 따라 적절한 텍스트 추출 함수 호출."""
+    """파일 시그니처(매직 넘버)로 실제 포맷 감지 후 적절한 추출 함수 호출.
+    확장자가 잘못된 경우(예: 수원시 .hwpx인데 실제 .hwp)에도 정상 추출."""
     if not file_path or not file_path.exists():
         return ""
+    fmt = _detect_file_format(file_path)
+    if fmt == "pdf":
+        return extract_pdf_text(file_path)
+    if fmt == "hwp":
+        return extract_hwp_text(file_path)
+    if fmt == "hwpx":
+        return extract_hwpx_text(file_path)
+    # 시그니처 모르면 확장자 폴백
     ext = file_path.suffix.lower()
     if ext == ".pdf":
         return extract_pdf_text(file_path)
@@ -294,13 +391,17 @@ KO_FONT_PATH: str = "/System/Library/Fonts/AppleSDGothicNeo.ttc"
 def hwp_to_text_pdf(hwp_path: Path, title: str = "") -> Path | None:
     """HWP/HWPX를 텍스트 추출 → reportlab PDF로 변환.
     표·이미지는 손실되지만 모바일에서도 텍스트 본문 확인 가능. LibreOffice/Java 의존 X.
+    파일 시그니처로 실제 포맷 감지 — 확장자 잘못된 케이스(수원시 등) 대응.
     """
     if not hwp_path or not hwp_path.exists():
         return None
-    ext = hwp_path.suffix.lower()
-    if ext not in (".hwp", ".hwpx"):
+    fmt = _detect_file_format(hwp_path)
+    if fmt == "hwp":
+        text = extract_hwp_text(hwp_path)
+    elif fmt == "hwpx":
+        text = extract_hwpx_text(hwp_path)
+    else:
         return None
-    text = extract_hwp_text(hwp_path) if ext == ".hwp" else extract_hwpx_text(hwp_path)
     if not text.strip():
         return None
     pdf_path = hwp_path.with_suffix(".pdf")
@@ -364,26 +465,65 @@ def _wrap_text(s: str, max_chars: int) -> list[str]:
 
 
 def extract_pdf_text(pdf_path: Path, max_pages: int = 20) -> str:
-    """PDF에서 텍스트 추출. 첫 N페이지만 (안전점검 공고는 대부분 짧음)."""
-    if not pdf_path or not pdf_path.exists() or pdf_path.suffix.lower() != ".pdf":
+    """PDF에서 텍스트 추출. 시그니처(매직 넘버)로 판별 — 확장자 무관.
+
+    1차: pdfplumber — 표 셀 텍스트까지 추출 (안양·과천 같이 PDF 표 위주 사이트 대응).
+    2차: pypdf 폴백 — pdfplumber가 못 다루는 PDF.
+    텍스트가 짧으면(<200자) 1·2차 결과 중 긴 쪽 채택.
+    """
+    if not pdf_path or not pdf_path.exists():
         return ""
+    if _detect_file_format(pdf_path) != "pdf":
+        return ""
+
+    # 1차: pdfplumber (표 셀 포함)
+    text_plumber = ""
     try:
-        from pypdf import PdfReader
-        reader = PdfReader(str(pdf_path))
+        import pdfplumber
         parts: list[str] = []
-        for i, page in enumerate(reader.pages):
-            if i >= max_pages:
-                break
-            try:
-                t = page.extract_text() or ""
-                if t.strip():
-                    parts.append(t)
-            except Exception:
-                continue
-        return "\n".join(parts)
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            for i, page in enumerate(pdf.pages):
+                if i >= max_pages:
+                    break
+                try:
+                    # 일반 텍스트
+                    t = page.extract_text() or ""
+                    if t.strip():
+                        parts.append(t)
+                    # 표 셀 추출 — 일반 추출에서 빠진 표 데이터 보강
+                    for tbl in (page.extract_tables() or []):
+                        for row in tbl:
+                            cells = [c.strip() for c in row if c and c.strip()]
+                            if cells:
+                                parts.append(" | ".join(cells))
+                except Exception:
+                    continue
+        text_plumber = "\n".join(parts)
     except Exception as exc:
-        logger.debug("[attachment] PDF 텍스트 추출 실패 (%s): %s", pdf_path.name, exc)
-        return ""
+        logger.debug("[attachment] pdfplumber 실패 (%s): %s", pdf_path.name, exc)
+
+    # 2차: pypdf 폴백 (pdfplumber 결과가 짧을 때)
+    text_pypdf = ""
+    if len(text_plumber.strip()) < 200:
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(str(pdf_path))
+            parts2: list[str] = []
+            for i, page in enumerate(reader.pages):
+                if i >= max_pages:
+                    break
+                try:
+                    t = page.extract_text() or ""
+                    if t.strip():
+                        parts2.append(t)
+                except Exception:
+                    continue
+            text_pypdf = "\n".join(parts2)
+        except Exception as exc:
+            logger.debug("[attachment] pypdf 실패 (%s): %s", pdf_path.name, exc)
+
+    # 더 긴 결과 채택
+    return text_plumber if len(text_plumber) >= len(text_pypdf) else text_pypdf
 
 
 def workspace_dir_for(notice_id: str, base: Path) -> Path:

@@ -81,7 +81,10 @@ def main() -> int:
     if posting.attachments:
         work = att_mod.workspace_dir_for(record["notice_id"], DATA_DIR / "attachments")
         for a in posting.attachments[:10]:
-            src, pdf = att_mod.prepare_for_upload(a.url, a.name, record["url"] or "", work)
+            src, pdf = att_mod.prepare_for_upload(
+                a.url, a.name, record["url"] or "", work,
+                session=adapter.session,
+            )
             chosen = pdf if pdf and pdf.exists() else src
             if chosen and chosen.exists():
                 file_paths.append(chosen)

@@ -99,7 +99,10 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
                     for a in posting.attachments[:10]:
                         # 한 첨부 실패가 전체를 망치지 않게 격리 — 본 흐름(LLM·발송) 보장
                         try:
-                            src, pdf = att_mod.prepare_for_upload(a.url, a.name, record["url"] or "", work)
+                            src, pdf = att_mod.prepare_for_upload(
+                                a.url, a.name, record["url"] or "", work,
+                                session=adapter.session,
+                            )
                         except Exception as att_exc:
                             logger.warning("[%s] 첨부 다운로드 실패 (%s): %s", site.name, a.name[:40], att_exc)
                             continue
