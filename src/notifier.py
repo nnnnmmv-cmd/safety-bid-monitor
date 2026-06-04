@@ -240,6 +240,32 @@ def send_slack(webhook_url: str, text: str, http_timeout: float = 15.0) -> None:
 
 _BOTH_CATEGORIES: set[str] = {"건축·토목", "건축/토목", "토목/건축", "토목·건축"}
 
+# 글 title에서 분야 키워드 자동 감지 — 사이트 category가 "건축·토목"인 경우
+# 진짜 분야 채널로만 발송 (잘못된 채널로 가는 노이즈 차단).
+_ARCH_KEYWORDS: tuple[str, ...] = (
+    "건축분야", "건축공사", "건축물", "건축허가", "근린생활시설",
+    "오피스텔", "다세대", "다가구", "공동주택", "단독주택",
+)
+_CIVIL_KEYWORDS: tuple[str, ...] = (
+    "토목분야", "도로", "하수관", "교량", "터널", "상수도", "하수도",
+    "옹벽", "구조물", "배수로", "안벽", "정비사업", "관로", "포장공사",
+)
+
+
+def _classify_post_category(title: str) -> str:
+    """글 title에서 분야 자동 감지. arch/civil/both.
+
+    명확한 분야 키워드 있으면 한쪽만, 둘 다 또는 없으면 양쪽(both) 안전 발송.
+    """
+    t = title or ""
+    has_arch = any(kw in t for kw in _ARCH_KEYWORDS)
+    has_civil = any(kw in t for kw in _CIVIL_KEYWORDS)
+    if has_arch and not has_civil:
+        return "건축"
+    if has_civil and not has_arch:
+        return "토목"
+    return "건축·토목"
+
 
 def _resolve_targets(slack: SlackConfig, category: str) -> list[str]:
     """공고의 category에 따라 발송할 Slack webhook URL 목록 반환.
@@ -360,12 +386,24 @@ def notify_new_postings(cfg: AppConfig, rows: Sequence[dict[str, object]]) -> No
 
 
 def send_one_posting(cfg: AppConfig, row: dict, file_paths: list) -> bool:
-    """공고 1건 + 첨부파일을 카테고리 채널에 발송 (메시지 + thread reply)."""
+    """공고 1건 + 첨부파일을 카테고리 채널에 발송 (메시지 + thread reply).
+
+    사이트 category가 "건축·토목"인 경우 글 title에서 분야 자동 감지해서
+    진짜 분야 채널로만 발송 (건축 글이 토목 채널로 잘못 가는 노이즈 방지).
+    """
     if not cfg.slack or not cfg.slack.bot_token:
         return False
-    targets = _resolve_channel_ids(cfg.slack, str(row.get("category") or ""))
+    site_cat = (str(row.get("category") or "")).strip()
+    effective_cat = site_cat
+    # "건축·토목" 사이트는 글 title 기반으로 동적 분기
+    if site_cat in _BOTH_CATEGORIES:
+        effective_cat = _classify_post_category(str(row.get("title") or ""))
+        if effective_cat != site_cat:
+            logger.info("[%s] 글 분야 감지: %s → %s (title 기반)",
+                        row.get("site_name"), site_cat, effective_cat)
+    targets = _resolve_channel_ids(cfg.slack, effective_cat)
     if not targets:
-        logger.warning("[%s] 매칭 채널 없음 — category=%r", row.get("site_name"), row.get("category"))
+        logger.warning("[%s] 매칭 채널 없음 — category=%r", row.get("site_name"), site_cat)
         return False
     text = "\n".join(_render_one_card(dict(row)))
     ok_any = False

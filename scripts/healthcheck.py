@@ -148,6 +148,10 @@ def check_sites(cfg: object, limit: int) -> None:
 
 
 def maybe_send_slack(cfg: object) -> None:
+    # NOTIFY_DISABLED 동안 헬스체크도 보류 (사용자 알림 정지 의도와 일관)
+    if os.getenv("NOTIFY_DISABLED", "").lower() in ("1", "true", "yes"):
+        print("\n(NOTIFY_DISABLED=true — 헬스체크 슬랙 발송 보류, 결과는 logs/healthcheck.log에 저장됨)")
+        return
     if not (cfg.slack and cfg.slack.bot_token):  # type: ignore[attr-defined]
         return
     admin = cfg.slack.channel_building or cfg.slack.channel_civil  # type: ignore[attr-defined]

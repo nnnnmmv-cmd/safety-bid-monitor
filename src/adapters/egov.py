@@ -335,10 +335,15 @@ class EgovAdapter(Adapter):
     def _maybe_fetch_detail(self, detail_url: str) -> tuple[str, datetime | None, int | None, list[Attachment]]:
         if not detail_url:
             return "", None, None, []
-        # detail URL 변환 실패 후 list URL fallback인 경우 — 같은 페이지 재요청 방지
-        # (Playwright 사이트는 Chromium 재기동 비용이 커서 특히 중요)
+        # list URL fallback 가드 — query에 detail seq 키가 있으면 진짜 detail이라 fetch 진행.
+        # 인천광역시·평택시처럼 list와 detail이 같은 .do path를 쓰면서 query만 다른 케이스 대응.
         if self.site.list_url and detail_url.startswith(self.site.list_url):
-            return "", None, None, []
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(detail_url).query)
+            detail_keys = {"sno", "bbs_seq", "notAncmtMgtNo", "not_ancmt_mgt_no",
+                          "seq", "bbsSn", "nttNo", "regiNo", "bbsSeq"}
+            if not (set(qs.keys()) & detail_keys):
+                return "", None, None, []
         try:
             html = self._get(detail_url)
         except RuntimeError as exc:
@@ -365,6 +370,8 @@ class EgovAdapter(Adapter):
         # 파주시 등 — article-body / bbs-cont / view-cont 류
         "div.article-body", "div.article-content", "article.article",
         "div.bbs-cont", "div.bbs_cont", "div.view-cont", "div.cont-view",
+        # 인천광역시 조달청 — 본문이 td.tb_left에 들어있는 케이스
+        "td.tb_left",
     )
 
     def _find_body_container(self, soup: BeautifulSoup) -> Tag | None:

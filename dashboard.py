@@ -310,7 +310,8 @@ def page_bids() -> None:
 ROSTER_COLUMNS: list[tuple[str, str]] = [
     ("last_updated", "업데이트"),
     ("name", "지자체명"),
-    ("category", "구분"),
+    ("is_arch", "건축"),
+    ("is_civil", "토목"),
     ("homecheck", "홈체크"),
     ("hansijin", "한시진"),
     ("hanjugum", "한주검"),
@@ -376,12 +377,21 @@ def page_roster() -> None:
     sites = read_sites()
     if user.role != "admin":
         sites = [s for s in sites if _visible_to_user(s)]
+    # category → 건축/토목 체크박스 2개로 분해 (사용자 의도: 직관적 UI)
+    def _cat_to_flags(cat: str) -> tuple[bool, bool]:
+        c = (cat or "").strip()
+        is_arch = "건축" in c
+        is_civil = "토목" in c
+        return is_arch, is_civil
+
     table_rows: list[dict[str, Any]] = []
     for s in sites:
+        is_arch, is_civil = _cat_to_flags(s.get("category", ""))
         table_rows.append({
             "last_updated": _to_date(s.get("last_updated")),
             "name": s.get("name", ""),
-            "category": s.get("category", "") or "",
+            "is_arch": is_arch,
+            "is_civil": is_civil,
             "homecheck": s.get("homecheck", "") or "",
             "hansijin": s.get("hansijin", "") or "",
             "hanjugum": s.get("hanjugum", "") or "",
@@ -409,9 +419,8 @@ def page_roster() -> None:
     column_config = {
         "last_updated": st.column_config.DateColumn("업데이트", format="YYYY-MM-DD"),
         "name": st.column_config.TextColumn("지자체명", required=True, width="medium"),
-        "category": st.column_config.SelectboxColumn(
-            "구분", options=["", "건축", "토목", "건축·토목"], required=False
-        ),
+        "is_arch": st.column_config.CheckboxColumn("건축", help="건축 분야 안전점검 글 수집·발송"),
+        "is_civil": st.column_config.CheckboxColumn("토목", help="토목 분야 안전점검 글 수집·발송"),
         "homecheck": st.column_config.SelectboxColumn("홈체크", options=["", "O", "X"]),
         "hansijin": st.column_config.SelectboxColumn("한시진", options=["", "O", "X"]),
         "hanjugum": st.column_config.SelectboxColumn("한주검", options=["", "O", "X"]),
@@ -461,7 +470,17 @@ def page_roster() -> None:
             base["name"] = name
             base["enabled"] = bool(row.get("enabled"))
             base["region"] = str(row.get("region") or "")
-            base["category"] = str(row.get("category") or "")
+            # 건축/토목 체크박스 → category 합성
+            arch_flag = bool(row.get("is_arch"))
+            civil_flag = bool(row.get("is_civil"))
+            if arch_flag and civil_flag:
+                base["category"] = "건축·토목"
+            elif arch_flag:
+                base["category"] = "건축"
+            elif civil_flag:
+                base["category"] = "토목"
+            else:
+                base["category"] = ""
             base["last_updated"] = _from_date(row.get("last_updated"))
             base["homecheck"] = str(row.get("homecheck") or "")
             base["hansijin"] = str(row.get("hansijin") or "")
