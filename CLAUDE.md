@@ -19,10 +19,10 @@
 - `PlaywrightAdapter._get`: list_url과 호스트 다르면 일반 requests로 fallback (Chromium 매번 재기동 비용 차단)
 - `_annotate_eminwon_detail_urls`: main_frame + iframe 모두 검사. `searchDetail` 함수는 `document.documentElement.outerHTML`에서 정규식으로 파싱 (IIFE/스코프 우회). 행 내 모든 `<a>`,`<td>`에 `data-action` 박음
 
-## 현재 운영 상태 (2026-06-02)
-- **알람 발송 일시 정지 중** — `.env`에 `NOTIFY_DISABLED=true`. 사용자가 명시적으로 재개 요청할 때까지 유지. monitor cron은 정상 동작(크롤링·DB·LLM)하고 슬랙 발송만 skip. 보류된 글은 `notified=False`로 DB 누적.
-- 헬스체크 cron(`com.safetybid.healthcheck`)도 `launchctl unload`로 중지 — 알람 재개 시 `launchctl load ~/Library/LaunchAgents/com.safetybid.healthcheck.plist`로 같이 재개. NOTIFY_DISABLED=true 동안 healthcheck.py의 maybe_send_slack도 자동 보류 (이중 안전).
-- 재개 시 옵션 A/B/C 안내: A=보류 글 모두 한꺼번에 발송 / B=보류 글 mark_notified 후 신규부터 발송 / C=특정 사이트만 재개
+## 현재 운영 상태 (2026-06-04 알림 재개)
+- 알림 정상 발송 중. monitor + healthcheck cron 모두 동작. 통합 게시판 7곳(구리·성남·안산·오산·평택·하남·화성) 합쳐서 1 row + category="건축·토목"로 정리. 의정부·양평·광주도 "건축·토목"으로 변경. notifier에 `_classify_post_category()` 추가 — "건축·토목" 사이트의 글은 title 분야 키워드(건축공사·근린생활시설 / 도로·하수관 등) 감지해서 동적 채널 분기.
+- 발주청 명부 UI: category SelectBox → 건축/토목 체크박스 2개 분리. 저장 시 두 체크박스 → category 합성("건축·토목" / "건축" / "토목").
+- 글 분야 키워드는 `src/notifier.py`의 `_ARCH_KEYWORDS`/`_CIVIL_KEYWORDS`. 필요 시 추가/조정.
 
 ## Gotchas
 - `slack_sdk.files_upload_v2`는 ok=true 응답해도 워크스페이스 정책으로 `channels=[]` (채널 attach 실패) 가능 → 메시지 본문에 원본 URL을 `attachments_raw`로 박는 우회책 사용 중

@@ -154,7 +154,9 @@ def maybe_send_slack(cfg: object) -> None:
         return
     if not (cfg.slack and cfg.slack.bot_token):  # type: ignore[attr-defined]
         return
-    admin = cfg.slack.channel_building or cfg.slack.channel_civil  # type: ignore[attr-defined]
+    # admin 알림은 토목 채널로 — 토목 채널이 건축·토목 둘 다 보는 운영 채널이고,
+    # 건축 전용 채널은 진짜 건축 공고만 받게 분리.
+    admin = cfg.slack.channel_civil or cfg.slack.channel_building  # type: ignore[attr-defined]
     if not admin:
         return
     try:
