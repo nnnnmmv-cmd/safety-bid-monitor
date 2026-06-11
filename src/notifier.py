@@ -288,7 +288,12 @@ def _resolve_targets(slack: SlackConfig, category: str) -> list[str]:
 
 
 def _resolve_channel_ids(slack: SlackConfig, category: str) -> list[str]:
-    """Bot 모드: category → 채널 ID 리스트."""
+    """Bot 모드: category → 채널 ID 리스트.
+
+    channel_all(통합 채널)이 설정되어 있으면 카테고리 무관 그 채널 하나로만 발송.
+    """
+    if getattr(slack, "channel_all", ""):
+        return [slack.channel_all]
     cat = (category or "").strip()
     b, c = slack.channel_building, slack.channel_civil
     if cat == "건축":

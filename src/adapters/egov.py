@@ -270,7 +270,8 @@ class EgovAdapter(Adapter):
         href = href_value.strip()
 
         # href가 비었거나 fragment(#, #none 등) 또는 javascript:면 onclick까지 합쳐서 URL/숫자 추출
-        if not href or href.startswith("#") or href.startswith("javascript:") or "javascript:" in href:
+        # 대소문자 변형(javaScript: 등) 대응 — 고양시
+        if not href or href.startswith("#") or "javascript:" in href.lower():
             combined = f"{href} {onclick}".strip()
             # 따옴표 안 인자들 모두 추출 (예: viewData('66441','A') → ['66441','A'])
             tokens = re.findall(r"['\"]([^'\"]+)['\"]", combined)

@@ -146,7 +146,13 @@ class PlaywrightAdapter(EgovAdapter):
             if (action && !/^https?:/.test(action)) {
                 try { action = new URL(action, document.baseURI).href; } catch(e) {}
             }
-            const form = document.forms['form1'];
+            // 폼 이름이 form1/form 등 사이트마다 달라서 not_ancmt_mgt_no input 가진 폼을 탐색 (고양시 = 'form')
+            let form = document.forms['form1'] || null;
+            if (!form) {
+                for (const f of document.forms) {
+                    if (f.querySelector('input[name=not_ancmt_mgt_no]')) { form = f; break; }
+                }
+            }
             if (!action && form) action = form.action;
             if (!action) return [0];
             // hidden field
@@ -164,7 +170,8 @@ class PlaywrightAdapter(EgovAdapter):
             document.querySelectorAll('tr').forEach(tr => {
                 let oc = '';
                 tr.querySelectorAll('a, td, button').forEach(el => {
-                    const v = el.getAttribute('onclick') || '';
+                    // onclick 또는 href(javaScript:searchDetail(...) 형태 — 고양시) 모두 검사
+                    const v = (el.getAttribute('onclick') || '') + ' ' + (el.getAttribute('href') || '');
                     if (v.includes('searchDetail')) oc = v;
                 });
                 const m = oc.match(/searchDetail\\(['"](\\d+)['"]/);

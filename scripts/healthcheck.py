@@ -154,17 +154,28 @@ def maybe_send_slack(cfg: object) -> None:
         return
     if not (cfg.slack and cfg.slack.bot_token):  # type: ignore[attr-defined]
         return
-    # admin 알림은 토목 채널로 — 토목 채널이 건축·토목 둘 다 보는 운영 채널이고,
-    # 건축 전용 채널은 진짜 건축 공고만 받게 분리.
-    admin = cfg.slack.channel_civil or cfg.slack.channel_building  # type: ignore[attr-defined]
+    # 통합 채널 우선, 없으면 토목 → 건축 폴백
+    admin = (
+        getattr(cfg.slack, "channel_all", "")  # type: ignore[attr-defined]
+        or cfg.slack.channel_civil  # type: ignore[attr-defined]
+        or cfg.slack.channel_building  # type: ignore[attr-defined]
+    )
     if not admin:
         return
     try:
         from slack_sdk import WebClient
         client = WebClient(token=cfg.slack.bot_token)  # type: ignore[attr-defined]
-        text = "*🩺 안전진단 모니터 헬스체크*\n```" + "\n".join(_RESULTS)[:2800] + "```"
-        client.chat_postMessage(channel=admin, text=text, mrkdwn=True)
-        print("\n(슬랙 발송 완료)")
+        # 메인 메시지는 제목 + 합계 요약 한 줄, 상세는 thread reply로 (채널 노이즈 최소화)
+        summary = next((ln.strip() for ln in _RESULTS if "합계:" in ln), "")
+        head = "*🩺 안전진단 모니터 헬스체크*"
+        if summary:
+            head += f"  —  {summary}"
+        resp = client.chat_postMessage(channel=admin, text=head, mrkdwn=True)
+        ts = resp.get("ts")
+        if ts:
+            detail = "```" + "\n".join(_RESULTS)[:2800] + "```"
+            client.chat_postMessage(channel=admin, thread_ts=ts, text=detail, mrkdwn=True)
+        print("\n(슬랙 발송 완료 — 제목 + 스레드 상세)")
     except Exception as e:
         print(f"\n(슬랙 발송 실패: {e})")
 

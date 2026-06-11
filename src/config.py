@@ -34,6 +34,7 @@ class SlackConfig:
     bot_token: str             # Bot User OAuth Token (xoxb-) — 파일 업로드용
     channel_building: str      # 건축 채널 ID (C0...)
     channel_civil: str         # 토목 채널 ID
+    channel_all: str           # 통합 채널 ID — 설정 시 건축/토목 구분 없이 모든 공고 이 채널로
 
 
 @dataclass
@@ -118,6 +119,7 @@ def _load_slack() -> SlackConfig | None:
     bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
     ch_b = os.getenv("SLACK_CHANNEL_BUILDING", "").strip()
     ch_c = os.getenv("SLACK_CHANNEL_CIVIL", "").strip()
+    ch_all = os.getenv("SLACK_CHANNEL_ALL", "").strip()
     if not (fallback or building or civil or admin or bot_token):
         return None
     return SlackConfig(
@@ -128,6 +130,7 @@ def _load_slack() -> SlackConfig | None:
         bot_token=bot_token,
         channel_building=ch_b,
         channel_civil=ch_c,
+        channel_all=ch_all,
     )
 
 

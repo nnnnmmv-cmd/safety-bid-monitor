@@ -19,10 +19,13 @@
 - `PlaywrightAdapter._get`: list_url과 호스트 다르면 일반 requests로 fallback (Chromium 매번 재기동 비용 차단)
 - `_annotate_eminwon_detail_urls`: main_frame + iframe 모두 검사. `searchDetail` 함수는 `document.documentElement.outerHTML`에서 정규식으로 파싱 (IIFE/스코프 우회). 행 내 모든 `<a>`,`<td>`에 `data-action` 박음
 
-## 현재 운영 상태 (2026-06-04 알림 재개)
-- 알림 정상 발송 중. monitor + healthcheck cron 모두 동작. 통합 게시판 7곳(구리·성남·안산·오산·평택·하남·화성) 합쳐서 1 row + category="건축·토목"로 정리. 의정부·양평·광주도 "건축·토목"으로 변경. notifier에 `_classify_post_category()` 추가 — "건축·토목" 사이트의 글은 title 분야 키워드(건축공사·근린생활시설 / 도로·하수관 등) 감지해서 동적 채널 분기.
-- 발주청 명부 UI: category SelectBox → 건축/토목 체크박스 2개 분리. 저장 시 두 체크박스 → category 합성("건축·토목" / "건축" / "토목").
-- 글 분야 키워드는 `src/notifier.py`의 `_ARCH_KEYWORDS`/`_CIVIL_KEYWORDS`. 필요 시 추가/조정.
+## 현재 운영 상태 (2026-06-07 재가동 + 채널 통합)
+- Supabase 재시작 완료, monitor + healthcheck cron 재가동.
+- **슬랙 채널 통합** — 건축/토목 채널 분리 운영 폐지, 새 통합 채널 하나로 모든 공고 발송. `.env`의 `SLACK_CHANNEL_ALL`에 통합 채널 ID 설정 시 `_resolve_channel_ids`가 카테고리 무관 그 채널만 반환. 미설정 시 기존 건축/토목 분기 폴백 (하위호환). **사용자가 .env에 SLACK_CHANNEL_ALL 추가 + 봇 /invite 필요.**
+- 헬스체크 슬랙 메시지 — 메인은 제목+합계 한 줄, 상세는 thread reply (`maybe_send_slack`).
+- URL 회신 반영(2026-06): 조달청 통합명부만 쓰는 7곳(농어촌공사·양평군 환경사업소·한국가스공사·한국어촌어항공단·한국철도공사·한국토지주택공사·한국도로공사) 모니터링 OFF. 고양시 se=01 + playwright 전환. 부천시 playwright 전환(eminwon iframe). 국가철도공단 list_url을 ebid.kr.or.kr/krn/krnBidList.do로 교체. 모니터링 ON 38곳.
+- 통합 게시판 7곳(구리·성남·안산·오산·평택·하남·화성)은 1 row + category="건축·토목". `_classify_post_category()`는 channel_all 설정 시 사실상 미사용 (채널 분기 자체가 없음).
+- 발주청 명부 UI: category SelectBox → 건축/토목 체크박스 2개 분리. 저장 시 두 체크박스 → category 합성.
 
 ## Gotchas
 - `slack_sdk.files_upload_v2`는 ok=true 응답해도 워크스페이스 정책으로 `channels=[]` (채널 attach 실패) 가능 → 메시지 본문에 원본 URL을 `attachments_raw`로 박는 우회책 사용 중
