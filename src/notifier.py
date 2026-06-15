@@ -360,7 +360,9 @@ def notify_new_postings(cfg: AppConfig, rows: Sequence[dict[str, object]]) -> No
     """기존 호출처 호환용. 첨부파일 없이 발송. monitor는 send_one_posting을 직접 호출 권장."""
     if not rows:
         return
-    if cfg.slack and cfg.slack.bot_token and (cfg.slack.channel_building or cfg.slack.channel_civil):
+    if cfg.slack and cfg.slack.bot_token and (
+        getattr(cfg.slack, "channel_all", "") or cfg.slack.channel_building or cfg.slack.channel_civil
+    ):
         sent = 0
         for row in rows:
             targets = _resolve_channel_ids(cfg.slack, str(row.get("category") or ""))
@@ -420,7 +422,20 @@ def send_one_posting(cfg: AppConfig, row: dict, file_paths: list) -> bool:
 
 def notify_error(cfg: AppConfig, summary: str, detail: str) -> None:
     body = f"{summary}\n\n---\n{detail}"
-    if cfg.slack:
+    # 통합 채널(channel_all) 우선 — Bot Token으로 발송. 에러 알림도 입찰공고 채널 한 곳에 모음.
+    if cfg.slack and cfg.slack.bot_token and getattr(cfg.slack, "channel_all", ""):
+        try:
+            from slack_sdk import WebClient
+            client = WebClient(token=cfg.slack.bot_token)
+            client.chat_postMessage(
+                channel=cfg.slack.channel_all,
+                text=f"*⚠️ 안전진단 모니터 에러*\n```{body[:2000]}```",
+                mrkdwn=True,
+            )
+            return
+        except Exception as exc:
+            logger.warning("통합 채널 에러 알림 실패, webhook 폴백: %s", exc)
+    if cfg.slack and cfg.slack.admin_webhook_url:
         send_slack(cfg.slack.admin_webhook_url, f"*⚠️ 안전진단 모니터 에러*\n```{body[:2000]}```")
         return
     if cfg.smtp and cfg.smtp.notify_admin:
