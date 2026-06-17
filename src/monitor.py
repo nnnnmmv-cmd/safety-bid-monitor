@@ -176,10 +176,13 @@ def run_once() -> None:
         logger.warning("활성화된 사이트가 없습니다. 대시보드의 발주청 명부에서 모니터링을 체크하세요.")
         return
 
-    # cron 시작 시 LLM 인증 사전 체크 — 만료면 LLM 호출 skip + admin 알림
+    # cron 시작 시 LLM 인증 사전 체크 — 진짜 만료(401)만 LLM skip + admin 알림.
+    # 일시적 proxy 지연은 ok=True + 경고 사유 → 로그만 남기고 LLM 시도 계속.
     global _LLM_AUTH_OK
     ok, reason = summarizer.check_auth()
     _LLM_AUTH_OK = ok
+    if ok and reason:
+        logger.warning("LLM 사전체크 경고(무시하고 진행): %s", reason)
     if not ok:
         logger.warning("LLM 인증 실패 — 이번 cron에서 LLM 추출 skip: %s", reason)
         try:

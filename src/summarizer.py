@@ -87,31 +87,40 @@ def check_auth() -> tuple[bool, str]:
     """LLM 실제 호출 → (OK?, 실패 시 사유). Claude Max OAuth 만료 감지용.
 
     monitor.run_once 시작 시 1회 호출. 만료면 LLM 호출 모두 skip + admin 알림.
+    cron 정각엔 proxy가 일시적으로 느려질 수 있어 타임아웃 여유(45초) + 2회 재시도.
+    timeout/연결 오류는 '만료'가 아니라 '일시적 지연'이므로 인증 실패로 판정하지 않음
+    (실제 cron은 LLM 호출을 계속 시도 — extract_bid_fields가 개별 처리).
     """
-    try:
-        r = requests.post(
-            OPENCLAW_PROXY_URL,
-            json={
-                "model": OPENCLAW_MODEL,
-                "messages": [{"role": "user", "content": "ping"}],
-                "max_tokens": 5,
-            },
-            timeout=10,
-        )
-        if r.status_code != 200:
-            return False, f"HTTP {r.status_code}: {r.text[:120]}"
-        content = (r.json().get("choices", [{}])[0].get("message", {}).get("content") or "")
-        if (
-            "Failed to authenticate" in content[:80]
-            or "authentication_error" in content[:200]
-            or content.startswith("401")
-        ):
-            return False, "Claude Max OAuth 만료 — /login 필요"
-        return True, ""
-    except requests.RequestException as exc:
-        return False, f"proxy 응답 없음: {exc}"
-    except Exception as exc:
-        return False, f"{type(exc).__name__}: {exc}"
+    import time as _time
+    last_exc = ""
+    for attempt in range(3):
+        try:
+            r = requests.post(
+                OPENCLAW_PROXY_URL,
+                json={
+                    "model": OPENCLAW_MODEL,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 5,
+                },
+                timeout=45,
+            )
+            if r.status_code != 200:
+                return False, f"HTTP {r.status_code}: {r.text[:120]}"
+            content = (r.json().get("choices", [{}])[0].get("message", {}).get("content") or "")
+            if (
+                "Failed to authenticate" in content[:80]
+                or "authentication_error" in content[:200]
+                or content.startswith("401")
+            ):
+                return False, "Claude Max OAuth 만료 — /login 필요"
+            return True, ""
+        except requests.RequestException as exc:
+            last_exc = str(exc)
+            if attempt < 2:
+                _time.sleep(5)  # proxy 깨어날 시간
+    # 3회 모두 타임아웃/연결 실패 — 인증 만료가 아닌 '일시 지연'으로 간주.
+    # LLM 호출은 계속 진행하게 True 반환 (개별 호출에서 실패하면 그 글만 0/7).
+    return True, f"(경고) proxy 응답 지연 — LLM 시도는 계속함: {last_exc[:80]}"
 
 
 def extract_bid_fields(title: str, body: str) -> dict[str, str]:
