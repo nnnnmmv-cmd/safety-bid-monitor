@@ -92,7 +92,8 @@ def check_auth() -> tuple[bool, str]:
     (실제 cron은 LLM 호출을 계속 시도 — extract_bid_fields가 개별 처리).
     """
     import time as _time
-    last_exc = ""
+    last_reason = ""
+    # 401 만료도 일시적인 경우가 있어 재시도 — proxy가 토큰 자동 갱신할 시간을 줌.
     for attempt in range(3):
         try:
             r = requests.post(
@@ -105,22 +106,26 @@ def check_auth() -> tuple[bool, str]:
                 timeout=45,
             )
             if r.status_code != 200:
-                return False, f"HTTP {r.status_code}: {r.text[:120]}"
-            content = (r.json().get("choices", [{}])[0].get("message", {}).get("content") or "")
-            if (
-                "Failed to authenticate" in content[:80]
-                or "authentication_error" in content[:200]
-                or content.startswith("401")
-            ):
-                return False, "Claude Max OAuth 만료 — /login 필요"
-            return True, ""
+                last_reason = f"HTTP {r.status_code}: {r.text[:120]}"
+            else:
+                content = (r.json().get("choices", [{}])[0].get("message", {}).get("content") or "")
+                if (
+                    "Failed to authenticate" in content[:80]
+                    or "authentication_error" in content[:200]
+                    or content.startswith("401")
+                ):
+                    last_reason = "Claude Max OAuth 만료 — /login 필요"
+                else:
+                    return True, ""  # 정상
         except requests.RequestException as exc:
-            last_exc = str(exc)
-            if attempt < 2:
-                _time.sleep(5)  # proxy 깨어날 시간
-    # 3회 모두 타임아웃/연결 실패 — 인증 만료가 아닌 '일시 지연'으로 간주.
-    # LLM 호출은 계속 진행하게 True 반환 (개별 호출에서 실패하면 그 글만 0/7).
-    return True, f"(경고) proxy 응답 지연 — LLM 시도는 계속함: {last_exc[:80]}"
+            last_reason = f"proxy 응답 없음: {exc}"
+        if attempt < 2:
+            _time.sleep(8)  # 재인증/proxy 깨어날 시간
+
+    # 3회 모두 실패. 401(만료)이면 진짜 알림 발송 (False), 그 외 일시 지연은 진행(True).
+    if "만료" in last_reason or "401" in last_reason:
+        return False, last_reason
+    return True, f"(경고) proxy 응답 지연 — LLM 시도는 계속함: {last_reason[:80]}"
 
 
 def extract_bid_fields(title: str, body: str) -> dict[str, str]:
