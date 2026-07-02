@@ -322,10 +322,20 @@ class EgovAdapter(Adapter):
         return None
 
     def _infer_notice_id(self, row: Tag, detail_url: str, title: str) -> str:
-        for key in ("nttId", "ntt_id", "no", "idx", "seq"):
-            m = re.search(rf"{key}=([0-9]+)", detail_url)
+        # 진짜 글 고유 ID 키를 우선 검사 (notAncmtMgtNo 등 eminwon/saeol 계열).
+        # 일반 키(no·idx·seq)는 후순위 — pageIndex 등 오매칭 방지 위해 [?&] 경계 필수.
+        for key in (
+            "notAncmtMgtNo", "not_ancmt_mgt_no", "nttId", "ntt_id",
+            "bbs_seq", "bbsSn", "sno", "gosiNttNo", "nttNo", "regiNo",
+            "no", "idx", "seq",
+        ):
+            m = re.search(rf"[?&]{key}=([0-9]+)", detail_url)
             if m:
                 return f"{key}={m.group(1)}"
+        # 폴백 1: title 기반 — 게시판 순번(row)보다 안정적.
+        # (순번은 새 글이 올라올 때마다 밀려서 같은 글이 매번 다른 ID로 중복 인식됨 — 포천시 사례)
+        if title:
+            return f"title={title[:40]}"
         no_cell = row.find("td")
         if isinstance(no_cell, Tag):
             text = no_cell.get_text(strip=True)
