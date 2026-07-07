@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import logging
 import smtplib
 import ssl
@@ -149,7 +150,10 @@ _FIELD_LABELS: list[tuple[str, str]] = [
 def _render_one_card(item: dict[str, object]) -> list[str]:
     """공고 1건의 Slack 메시지 카드."""
     title = _slack_escape(str(item.get("title") or "(제목 없음)"))
-    site = _slack_escape(str(item.get("site_name") or ""))
+    # 사이트명의 내부 관리용 suffix(-건축/-토목 등)는 표시에서 제거 — 글 분야로 오해 방지
+    raw_site = str(item.get("site_name") or "")
+    raw_site = re.sub(r"-(건축·토목|건축/토목|토목/건축|건축|토목)$", "", raw_site)
+    site = _slack_escape(raw_site)
     url = str(item.get("url") or "")
     title_line = f"*[{site}] {title}*" if site else f"*{title}*"
 
