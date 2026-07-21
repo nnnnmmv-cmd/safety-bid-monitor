@@ -451,7 +451,15 @@ class EgovAdapter(Adapter):
         if m:
             user_nm, sys_nm, path = m.group(1), m.group(2), m.group(3)
             base = self._eminwon_download_base(detail_url)
-            return f"{base}?user_file_nm={quote(user_nm)}&sys_file_nm={quote(sys_nm)}&file_path={quote(path)}", user_nm
+            # safe="" — 의왕시처럼 인자가 base64 토큰('/','+' 포함)인 경우 전부 인코딩해야
+            # 서버가 경로 구분자로 오해하지 않음 ("잘못된 경로 접근" 방지)
+            dl_url = (
+                f"{base}?user_file_nm={quote(user_nm, safe='')}"
+                f"&sys_file_nm={quote(sys_nm, safe='')}&file_path={quote(path, safe='')}"
+            )
+            # 파일명은 anchor 표시 텍스트 우선 (토큰 파일명 대비 사람이 읽는 이름)
+            name = self._filename_from_url_or_text("", text) or user_nm
+            return dl_url, name
         # 안산시 fnFileDownLoad('FILE_ID') → /common/file/FileDown.do?file_id=FILE_ID (GET 동작 확인됨)
         m = re.search(r"fnFileDownLoad\s*\(\s*['\"]([^'\"]+)['\"]", combined, re.IGNORECASE)
         if m:

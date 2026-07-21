@@ -136,6 +136,17 @@ def download_attachment(
                         logger.warning("[attachment] 파일 크기 초과(%dMB), 스킵: %s", total // 1024 // 1024, final_name)
                         return None
                     f.write(chunk)
+            # 문서를 기대했는데 HTML(에러 페이지)이 오면 첨부 제외 —
+            # eminwon "잘못된 경로 접근입니다" alert 페이지가 슬랙에 올라가는 사고 방지
+            if dest.suffix.lower() not in (".html", ".htm"):
+                try:
+                    head = dest.open("rb").read(512).lstrip().lower()
+                    if head.startswith((b"<script", b"<!doctype", b"<html", b"<head", b"<meta")):
+                        logger.warning("[attachment] HTML 에러 페이지 응답, 스킵: %s", final_name[:60])
+                        dest.unlink(missing_ok=True)
+                        return None
+                except Exception:
+                    pass
             return dest
     except requests.RequestException as exc:
         logger.warning("[attachment] 다운로드 실패 %s: %s", url[:80], exc)
