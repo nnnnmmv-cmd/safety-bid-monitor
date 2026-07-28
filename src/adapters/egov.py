@@ -280,8 +280,12 @@ class EgovAdapter(Adapter):
                 if m:
                     tokens = [m.group(1)]
             first = tokens[0] if tokens else ""
+            template = self.site.selectors.get("detail_url_template", "")
             if first.startswith("http") or first.startswith("/"):
                 href = first
+            elif first.isdigit() and template:
+                # 경로형 상세 URL (예: 성남시 https://.../pm010301/{seq}) — 쿼리 파라미터 방식이 아닌 사이트용
+                href = template.replace("{seq}", first)
             elif first.isdigit() and self.site.list_url:
                 # 글번호 + 추가 인자들 → list URL 패턴을 detail URL 패턴으로 자동 변환
                 href = _convert_list_to_detail_url(self.site.list_url, self.site.list_params, tokens)

@@ -70,7 +70,11 @@ class PlaywrightAdapter(EgovAdapter):
                     ignore_https_errors=True,  # 일부 한국 정부 사이트의 오래된 SSL
                 )
                 page = context.new_page()
-                page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+                resp = page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+                # HTTP 에러를 조용히 넘기면 사이트 URL이 바뀌어도 "0건 수집"으로만 보여 발견이 늦음
+                # (성남시 리뉴얼 404가 이 경로로 장기간 묻혔음)
+                if resp is not None and resp.status >= 400:
+                    raise RuntimeError(f"HTTP {resp.status} — URL 확인 필요: {url[:100]}")
                 logger.info("[pw-debug] goto 후 길이=%d, frames=%d", len(page.content()), len(page.frames))
                 try:
                     page.wait_for_selector("table, ul.board_list, div.list, div.contents", timeout=5000)

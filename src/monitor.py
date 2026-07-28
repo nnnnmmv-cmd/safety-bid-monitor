@@ -13,7 +13,7 @@ from . import store, summarizer
 from .adapters.registry import build_adapter
 from .config import DATA_DIR, LOG_DIR, AppConfig, SiteConfig, load_config
 from .filter import match_keywords
-from .notifier import notify_error, notify_new_postings, send_one_posting
+from .notifier import _classify_post_category, notify_error, notify_new_postings, send_one_posting
 from .utils import utc_now_iso
 
 logger: logging.Logger = logging.getLogger("safetybid")
@@ -24,6 +24,14 @@ logger: logging.Logger = logging.getLogger("safetybid")
 SITE_PRICE_CAP: dict[str, int] = {
     "안양시": 100_000_000,
     "과천시": 100_000_000,
+}
+
+# 사이트별 분야 필터 — 여기 명시된 사이트만 해당 분야 글로 제한.
+# 사이트 category(명부 표시용)와 별개: 통합 게시판에 category가 한쪽으로 적힌 곳이 많아
+# (용인시-토목·연천군 맑은물 등) 전역 적용 시 정상 글이 대량 누락됨.
+# 제목에 분야 표시 없는 글은 통과 — 놓침 방지.
+SITE_CATEGORY_FILTER: dict[str, str] = {
+    "부천시": "토목",  # 건축 모니터링 불필요 (2026-07 요청)
 }
 
 
@@ -66,6 +74,17 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
             matched = match_keywords(posting, cfg.keywords)
             if not matched:
                 continue
+            # 분야 필터 — SITE_CATEGORY_FILTER에 명시된 사이트만 적용.
+            # 분야 표시 없는 일반 공고("안전점검 수행기관 모집")는 통과 — 놓침 방지.
+            want_cat = SITE_CATEGORY_FILTER.get(site.name)
+            if want_cat:
+                post_cat = _classify_post_category(posting.title)
+                if post_cat in ("건축", "토목") and post_cat != want_cat:
+                    logger.info(
+                        "[%s] skip(분야 불일치: 수집=%s, 글=%s): %s",
+                        site.name, want_cat, post_cat, posting.title[:40],
+                    )
+                    continue
             # 사이트별 추정가 상한 적용 (안양시·과천시 1억 이상 제외)
             cap = SITE_PRICE_CAP.get(site.name)
             if cap and posting.estimated_price and posting.estimated_price >= cap:
