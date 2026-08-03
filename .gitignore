@@ -17,3 +17,7 @@ logs/
 # macOS / 빌드 결과물
 .DS_Store
 *.app/
+
+# .env 백업본(옛 DB 키 포함) 커밋 방지
+.env.*
+!.env.example

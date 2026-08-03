@@ -265,6 +265,18 @@ def run_once() -> None:
         except Exception:
             logger.exception("관리자 알림 발송도 실패")
 
+    # 사이클 맨 끝 — 허브 arch_bid_notices 나라장터 공고문 요건 추출.
+    # 전체를 격리: 여기서 무슨 일이 나도 위의 지자체 수집·알림에는 영향 없음.
+    # LLM 인증이 이미 만료로 판정됐으면(_LLM_AUTH_OK=False) 이번 사이클은 건너뜀.
+    try:
+        if not _LLM_AUTH_OK:
+            logger.info("[g2b] LLM 인증 실패 상태 — 이번 사이클 추출 skip")
+        else:
+            from . import g2b_requirements
+            g2b_requirements.run()
+    except Exception:
+        logger.exception("[g2b] 요건 추출 실패 (지자체 수집·알림에는 영향 없음)")
+
 
 def main() -> int:
     try:
