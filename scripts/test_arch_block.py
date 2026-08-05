@@ -70,6 +70,39 @@ def main() -> int:
     finally:
         notifier.send_card_with_attachments = orig
 
+    # 수집은 통과 + 알림만 차단 (2026-08-05 부천시 수집 필터 제거 후 동작)
+    print("\n[수집/알림 2단계 동작 — 차단 대상 지자체]")
+    from src.monitor import SITE_CATEGORY_FILTER
+    from src.notifier import _classify_post_category
+
+    def collected(site: str, title: str) -> bool:
+        """monitor의 수집 단계 분야 필터를 그대로 재현 — 통과하면 bids에 저장됨."""
+        want = SITE_CATEGORY_FILTER.get(site)
+        if not want:
+            return True
+        post_cat = _classify_post_category(title)
+        return not (post_cat in ("건축", "토목") and post_cat != want)
+
+    two_stage = [
+        ("부천시", "건설공사(건축분야) 안전점검 수행기관 지정 공고(상동 317-8번지)", "건축"),
+        ("부천시", "건설(건축)공사 안전점검 수행기관 지정 공고", "건축"),
+        ("과천시", "건설(건축)공사 안전점검 수행기관 지정 공고(갈현동 833-2)", "건축"),
+    ]
+    for site, title, kind in two_stage:
+        c_ok = collected(site, title)          # 수집 통과해야 함
+        n_skip = should_skip_arch_notify(site, title)  # 알림은 막혀야 함
+        ok = c_ok and n_skip
+        failed += 0 if ok else 1
+        print(f"  {'✅' if ok else '❌'} {site} {kind}: 수집={'저장' if c_ok else '제외'} / 알림={'스킵' if n_skip else '발송'}")
+        if not ok:
+            print(f"       기대: 수집=저장, 알림=스킵 | {title[:50]}")
+
+    # 부천시 토목은 수집·알림 둘 다 정상이어야 함
+    site, title = "부천시", "하수관로 정비공사 안전점검 수행기관 지정 공고"
+    ok = collected(site, title) and not should_skip_arch_notify(site, title)
+    failed += 0 if ok else 1
+    print(f"  {'✅' if ok else '❌'} 부천시 토목: 수집=저장 / 알림=발송")
+
     print(f"\n{'전체 통과' if failed == 0 else f'❌ {failed}건 실패'}")
     return 1 if failed else 0
 

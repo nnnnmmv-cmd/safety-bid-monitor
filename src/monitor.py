@@ -36,9 +36,9 @@ SITE_PRICE_CAP: dict[str, int] = {
 # 사이트 category(명부 표시용)와 별개: 통합 게시판에 category가 한쪽으로 적힌 곳이 많아
 # (용인시-토목·연천군 맑은물 등) 전역 적용 시 정상 글이 대량 누락됨.
 # 제목에 분야 표시 없는 글은 통과 — 놓침 방지.
-SITE_CATEGORY_FILTER: dict[str, str] = {
-    "부천시": "토목",  # 건축 모니터링 불필요 (2026-07 요청)
-}
+# 부천시 제거(2026-08-05): notifier.ARCH_NOTIFY_BLOCKED_SITES로 건축 '알림'을 막게 되어
+# 수집까지 제한할 이유가 없어짐 — 건축 공고도 bids에 쌓아 모집·등록명부 추적에 활용.
+SITE_CATEGORY_FILTER: dict[str, str] = {}
 
 
 def _notify_disabled() -> bool:
