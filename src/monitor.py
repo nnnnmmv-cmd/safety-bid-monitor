@@ -13,7 +13,13 @@ from . import store, summarizer
 from .adapters.registry import build_adapter
 from .config import DATA_DIR, LOG_DIR, AppConfig, SiteConfig, load_config
 from .filter import match_keywords
-from .notifier import _classify_post_category, notify_error, notify_new_postings, send_one_posting
+from .notifier import (
+    _classify_post_category,
+    notify_error,
+    notify_new_postings,
+    send_one_posting,
+    should_skip_arch_notify,
+)
 from .utils import utc_now_iso
 
 logger: logging.Logger = logging.getLogger("safetybid")
@@ -167,6 +173,14 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
                     logger.info(
                         "[%s] 발송 보류 (NOTIFY_DISABLED=true): %s",
                         site.name, record["title"][:30],
+                    )
+                elif should_skip_arch_notify(site.name, record["title"]):
+                    # 건축 투찰 불가 발주청의 건축 공고 — 알림만 제외, DB 저장은 유지.
+                    # notified 처리해서 fallback이 매 사이클 재시도하지 않게 한다.
+                    store.mark_notified([record["notice_id"]])
+                    logger.info(
+                        "[skip] %s 건축 공고 알림 제외(투찰불가): %s",
+                        site.name, record["title"][:45],
                     )
                 elif send_one_posting(cfg, row_for_send, file_paths):
                     store.mark_notified([record["notice_id"]])

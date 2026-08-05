@@ -247,7 +247,8 @@ _BOTH_CATEGORIES: set[str] = {"건축·토목", "건축/토목", "토목/건축"
 # 글 title에서 분야 키워드 자동 감지 — 사이트 category가 "건축·토목"인 경우
 # 진짜 분야 채널로만 발송 (잘못된 채널로 가는 노이즈 차단).
 _ARCH_KEYWORDS: tuple[str, ...] = (
-    "건축분야", "건축공사", "건축물", "건축허가", "근린생활시설",
+    # "(건축)" — 과천시·인천 등이 쓰는 "건설(건축)공사" 표기. 괄호 때문에 "건축공사"로는 안 잡힘
+    "건축분야", "건축공사", "(건축)", "건축물", "건축허가", "근린생활시설",
     "오피스텔", "다세대", "다가구", "공동주택", "단독주택",
 )
 _CIVIL_KEYWORDS: tuple[str, ...] = (
@@ -269,6 +270,30 @@ def _classify_post_category(title: str) -> str:
     if has_civil and not has_arch:
         return "토목"
     return "건축·토목"
+
+
+# 건축 분야 투찰이 불가한 발주청 — 건축 공고 '알림만' 제외한다.
+# 수집·DB 저장은 그대로 유지 (모집·등록명부 공고 추적이 필요하므로 enabled를 끄지 않는다).
+# 실무자 확인 2026-08-05, 변동 시 이 목록만 수정.
+ARCH_NOTIFY_BLOCKED_SITES: frozenset[str] = frozenset({
+    "과천시",
+    "과천도시공사",
+    "의왕시",
+    "양주시",
+    "부천시",
+})
+
+
+def should_skip_arch_notify(site_name: str, title: str) -> bool:
+    """차단 대상 발주청의 '건축으로 분류되는' 공고면 True (알림만 제외).
+
+    - 사이트 매칭은 반드시 정확 일치 — "양주시"/"남양주시", "과천시"/"과천도시공사"처럼
+      부분 문자열이 겹치는 항목이 있어 `in` 부분매칭을 쓰면 엉뚱한 지자체가 막힌다.
+    - 토목 분류는 절대 막지 않는다. 분야 미표시(모집·등록명부 등)도 그대로 발송한다.
+    """
+    if (site_name or "").strip() not in ARCH_NOTIFY_BLOCKED_SITES:
+        return False
+    return _classify_post_category(title) == "건축"
 
 
 def _resolve_targets(slack: SlackConfig, category: str) -> list[str]:
@@ -369,6 +394,13 @@ def notify_new_postings(cfg: AppConfig, rows: Sequence[dict[str, object]]) -> No
     ):
         sent = 0
         for row in rows:
+            # 건축 투찰 불가 발주청의 건축 공고 — fallback 경로에서도 동일하게 제외
+            if should_skip_arch_notify(str(row.get("site_name") or ""), str(row.get("title") or "")):
+                logger.info(
+                    "[skip] %s 건축 공고 알림 제외(투찰불가): %s",
+                    row.get("site_name"), str(row.get("title") or "")[:45],
+                )
+                continue
             targets = _resolve_channel_ids(cfg.slack, str(row.get("category") or ""))
             if not targets:
                 continue
@@ -404,6 +436,14 @@ def send_one_posting(cfg: AppConfig, row: dict, file_paths: list) -> bool:
     """
     if not cfg.slack or not cfg.slack.bot_token:
         return False
+    # 건축 투찰 불가 발주청의 건축 공고 — 발송만 건너뜀 (DB에는 이미 저장돼 있음).
+    # True 반환 = "처리 완료" — 미발송으로 남겨 매 사이클 재시도하지 않게 한다.
+    if should_skip_arch_notify(str(row.get("site_name") or ""), str(row.get("title") or "")):
+        logger.info(
+            "[skip] %s 건축 공고 알림 제외(투찰불가): %s",
+            row.get("site_name"), str(row.get("title") or "")[:45],
+        )
+        return True
     site_cat = (str(row.get("category") or "")).strip()
     effective_cat = site_cat
     # "건축·토목" 사이트는 글 title 기반으로 동적 분기
