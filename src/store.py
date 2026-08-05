@@ -103,6 +103,22 @@ def update_bid_extracted_fields(notice_id: str, fields: dict[str, str]) -> None:
     client().table("bids").update({"extracted_fields": fields}).eq("notice_id", notice_id).execute()
 
 
+def merge_bid_extracted_fields(notice_id: str, patch: dict[str, Any]) -> None:
+    """extracted_fields에 patch 키만 병합 — 기존 키(7필드 등)는 보존.
+
+    결과 공고 추출(result_kind·selected_company 등)을 나중에 덧붙일 때 사용.
+    """
+    if not patch:
+        return
+    c = client()
+    res = c.table("bids").select("extracted_fields").eq("notice_id", notice_id).limit(1).execute()
+    current = (res.data[0].get("extracted_fields") if res.data else None) or {}
+    if not isinstance(current, dict):
+        current = {}
+    merged = {**current, **patch}
+    c.table("bids").update({"extracted_fields": merged}).eq("notice_id", notice_id).execute()
+
+
 def fetch_recent_bids(limit: int = 500) -> list[dict[str, Any]]:
     res = (
         client().table("bids").select("*")

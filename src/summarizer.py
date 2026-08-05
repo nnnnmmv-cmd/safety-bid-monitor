@@ -51,6 +51,92 @@ SYSTEM_PROMPT: str = """당신은 한국 공공 건설공사 안전점검 입찰
 {"inspection_cost":"...","contractor":"...","scale":"...","bid_period":"...","evaluation_method":"...","low_bid_rate":"...","winner_selection":"..."}"""
 
 
+# ---------------- 결과 공고(지정/선정 결과) 추출 ----------------
+# 게시판 전용 건은 이 공고문이 "어느 업체가 얼마에 선정됐는지"의 유일한 원천이다
+# (나라장터 경유 건은 허브가 API로 결과를 받음).
+# "선정"은 '수행기관 선정 모집 공고'처럼 모집 단계에도 쓰여 (?!.*모집)로 배제.
+RESULT_TITLE_RE: re.Pattern[str] = re.compile(r"결과|선정(?!.*모집)|낙찰")
+
+RESULT_KEYS: tuple[str, ...] = ("result_kind", "selected_company", "selected_price", "target_project")
+
+RESULT_SYSTEM_PROMPT: str = """너는 한국 공공 안전점검 '지정/선정 결과 공고'에서 결과 사실만 그대로 뽑아내는 도구다.
+
+규칙:
+- 공고문에 적힌 표현을 원문 그대로 인용한다. 해석·요약·추론하지 마라.
+- 공고문에 없으면 반드시 null. 절대 지어내지 마라.
+- selected_price는 숫자만 (쉼표·원 제거, 부가세 포함 여부는 무시). 금액이 없으면 null.
+- 여러 업체가 순위별로 나오면 1순위(우선순위자)를 selected_company로 한다.
+- 설명 문장 없이 JSON만 출력한다.
+
+출력 형식:
+{"result_kind":"지정결과|선정결과|낙찰결과 중 공고문 표현에 가까운 것","selected_company":"선정 업체명 원문 (없으면 null)","selected_price":숫자 또는 null,"target_project":"대상 공사명 원문 (없으면 null)"}"""
+
+
+def is_result_notice(title: str) -> bool:
+    """제목이 결과류(지정/선정 결과·낙찰)인지."""
+    return bool(RESULT_TITLE_RE.search(title or ""))
+
+
+def _to_price(value: Any) -> int | None:
+    """'1,234,000원' / 1234000 / None → int | None."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        n = int(value)
+        return n if 0 < n < 10**12 else None
+    digits = re.sub(r"[^0-9]", "", str(value))
+    if not digits:
+        return None
+    n = int(digits)
+    return n if 0 < n < 10**12 else None
+
+
+def extract_result_fields(title: str, body: str) -> dict[str, Any]:
+    """결과 공고에서 선정업체·금액·대상공사 추출. 실패 시 빈 dict (호출측이 병합 skip)."""
+    body = (body or "")[:12000]
+    if not title and not body:
+        return {}
+
+    payload: dict[str, Any] = {
+        "model": OPENCLAW_MODEL,
+        "messages": [
+            {"role": "system", "content": RESULT_SYSTEM_PROMPT},
+            {"role": "user", "content": f"공고 제목: {title}\n\n공고 본문:\n{body}"},
+        ],
+        "max_tokens": 600,
+        "temperature": 0.1,
+    }
+    try:
+        r = requests.post(OPENCLAW_PROXY_URL, json=payload, timeout=SUMMARIZE_TIMEOUT)
+        r.raise_for_status()
+        content = r.json()["choices"][0]["message"]["content"]
+    except Exception as exc:
+        logger.warning("결과 추출 LLM 실패 (title=%s...): %s", (title or "")[:30], exc)
+        return {}
+
+    if content and ("authentication_error" in content[:200] or "Failed to authenticate" in content[:80]):
+        logger.warning("결과 추출 — LLM 인증 만료")
+        return {}
+
+    parsed = _extract_json(content)
+    if not isinstance(parsed, dict):
+        logger.warning("결과 추출 JSON 파싱 실패. raw=%r", (content or "")[:160])
+        return {}
+
+    out: dict[str, Any] = {}
+    for k in RESULT_KEYS:
+        v = parsed.get(k)
+        if k == "selected_price":
+            out[k] = _to_price(v)
+        else:
+            s = str(v).strip() if v not in (None, "", "null") else ""
+            out[k] = s or None
+    # result_kind는 비어도 결과 공고임은 확실하므로 기본값 보정
+    if not out.get("result_kind"):
+        out["result_kind"] = "지정결과"
+    return out
+
+
 def _extract_json(text: str) -> dict[str, str] | None:
     """LLM이 ```json ... ``` 또는 설명+JSON 형태로 반환할 수 있어 안전하게 JSON 부분만 추출."""
     text = text.strip()

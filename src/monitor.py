@@ -158,6 +158,19 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
                         logger.info("[%s] LLM 추출 %d/7 (%s)", site.name, non_empty, record["title"][:30])
                         if any(extracted.values()):
                             store.update_bid_extracted_fields(record["notice_id"], extracted)
+
+                        # 결과 공고면 선정업체·금액도 추출해 덧붙임 (게시판 전용 건의 유일한 결과 원천).
+                        # 기존 7필드를 덮지 않도록 merge 사용.
+                        if summarizer.is_result_notice(record["title"]):
+                            result = summarizer.extract_result_fields(record["title"], body_for_llm)
+                            if result.get("selected_company") or result.get("selected_price"):
+                                store.merge_bid_extracted_fields(record["notice_id"], result)
+                                extracted = {**extracted, **result}
+                                logger.info(
+                                    "[%s] 결과 추출: %s / %s",
+                                    site.name, result.get("selected_company") or "업체미상",
+                                    f"{result['selected_price']:,}원" if result.get("selected_price") else "금액미상",
+                                )
                     except Exception as ex:
                         logger.warning("[%s] LLM 요약 실패 (%s): %s", site.name, record["notice_id"], ex)
 

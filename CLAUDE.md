@@ -37,6 +37,7 @@
 - eminwon은 POST form이지만 **GET URL로도 detail 응답** (`OfrAction.do?method=selectOfrNotAncmt&not_ancmt_mgt_no=N&jndinm=OfrNotAncmtEJB&context=NTIS`)
 - openclaw proxy(`localhost:3456`)는 `claude-sonnet-4-5`/`4-6` 어느 쪽 요청도 응답 model이 `claude-sonnet-4`로 라우팅됨 (모델 선택권 우리에게 없음)
 - 사이트 가격 상한은 `src/monitor.py`의 `SITE_PRICE_CAP` dict로 관리 (안양·과천 1억 미만만)
+- 결과 공고(지정/선정 결과)는 `summarizer.is_result_notice()`로 판별 → `extract_result_fields()`로 선정업체·금액·대상공사를 뽑아 `store.merge_bid_extracted_fields()`로 **병합**(기존 7필드 덮지 않음). 게시판 전용 건은 이 공고문이 유일한 결과 원천. 백필: `scripts/backfill_results.py`, 검증: `scripts/test_result_extract.py`
 - 건축 투찰 불가 발주청은 `src/notifier.py`의 `ARCH_NOTIFY_BLOCKED_SITES`(과천시·과천도시공사·의왕시·양주시·부천시) — **알림만 제외, 수집·DB 저장은 유지**(모집·등록명부 공고 추적 필요). 토목·분야미표시는 그대로 발송. 사이트 매칭은 **정확 일치 필수** — "양주시"⊂"남양주시", "과천시"⊂"과천도시공사"라 부분매칭 쓰면 엉뚱한 곳이 막힘. 검증: `scripts/test_arch_block.py`
 - 사이트 분야 필터는 `src/monitor.py`의 `SITE_CATEGORY_FILTER` dict (현재 부천시=토목만). **사이트 category 값으로 전역 필터링 금지** — 통합 게시판인데 category가 한쪽으로 적힌 곳(용인시-토목·연천군 맑은물·여주시 등)이 많아 정상 글이 대량 누락됨 (검증 시 60일치 22건 중 18건이 오탐)
 
