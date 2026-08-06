@@ -9,7 +9,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from . import attachments as att_mod
-from . import store, summarizer
+from . import hub_sync, store, summarizer
 from .adapters.registry import build_adapter
 from .config import DATA_DIR, LOG_DIR, AppConfig, SiteConfig, load_config
 from .filter import match_keywords
@@ -200,6 +200,21 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
                     logger.info("[%s] 발송 완료: %s (첨부 %d개)", site.name, record["title"][:30], len(file_paths))
                 else:
                     logger.warning("[%s] 발송 실패: %s", site.name, record["title"][:30])
+
+                # 4) 허브 arch_bid_notices에도 upsert (source='local') — 허브 입찰 관리 화면 합류.
+                # 알림은 이미 위에서 처리했으므로 notified_at을 채워 허브 재알림을 막는다.
+                # 실패해도 수집·알림에는 영향 없음 (upsert_bid 내부에서 예외 흡수).
+                try:
+                    if hub_sync.upsert_bid(record):
+                        result_ef = extracted or {}
+                        if result_ef.get("selected_company") or result_ef.get("selected_price"):
+                            hub_sync.upsert_award(
+                                record["notice_id"],
+                                result_ef.get("selected_company"),
+                                result_ef.get("selected_price"),
+                            )
+                except Exception:
+                    logger.exception("[hub] upsert 중 예외 (수집·알림 영향 없음)")
         except Exception as exc:
             insert_errors += 1
             logger.warning(
