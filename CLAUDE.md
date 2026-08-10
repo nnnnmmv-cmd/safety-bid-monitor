@@ -36,7 +36,7 @@
 - 목록 1페이지가 10건인데 GET 페이징이 막힌 사이트(화성시)는 **list_url에 제목검색 파라미터를 박아** 대상 공고만 받게 할 것 — 안 그러면 게시량 많은 날 구조적 누락 (화성시 `q_sc=notAncmtSj&q_sv=안전점검`)
 - eminwon은 POST form이지만 **GET URL로도 detail 응답** (`OfrAction.do?method=selectOfrNotAncmt&not_ancmt_mgt_no=N&jndinm=OfrNotAncmtEJB&context=NTIS`)
 - openclaw proxy(`localhost:3456`)는 `claude-sonnet-4-5`/`4-6` 어느 쪽 요청도 응답 model이 `claude-sonnet-4`로 라우팅됨 (모델 선택권 우리에게 없음)
-- 사이트 가격 상한은 `src/monitor.py`의 `SITE_PRICE_CAP` dict로 관리 (안양·과천 1억 미만만)
+- **금액으로 수집을 거르지 말 것** (2026-08-10 `SITE_PRICE_CAP` 제거). 안양시는 명부가 금액으로 갈리고('가' 1억 미만=안양 업체만 / '나' 1억 이상=경기도 업체, 홈체크·한시진 등록) 1억 이상이 오히려 투찰 대상. 명부 규칙은 지자체별 연 1회 갱신되므로 크롤러가 거르면 규칙 변경 때마다 코드 수정 + 그 사이 공고 영구 유실. 수집은 넓게, 참가 가능 판정은 허브(기관·금액·법인 3조건)에서.
 - 지자체 공고는 수집 직후 `src/hub_sync.py`로 허브 `arch_bid_notices`에 `source='local'` upsert (허브 입찰 관리 화면 합류용). **`notified_at` 필수** — 비우면 허브 아침 cron이 재알림. bids 저장·자체 슬랙 알림은 그대로 유지(이중 저장). 마감일이 실무상 항상 비어 있어 `bid_clse_dt`는 `posted_at+14일` 폴백. `presmpt_price`(낙찰률 분모)는 `extracted_fields.inspection_cost`를 `hub_sync.parse_inspection_cost()`로 파싱 — **결과공고엔 넣지 말 것**(기준=낙찰이 되어 낙찰률 100%). 천원 단위(`24,000천원`)·한글 금액은 저장 안 함(1000배 오류 방지), 복수 금액은 첫 값(안전점검비용 정가) 채택. 백필: `scripts/backfill_hub_notices.py`, 검증: `scripts/test_hub_sync.py`
 - 결과 공고(지정/선정 결과)는 `summarizer.is_result_notice()`로 판별 → `extract_result_fields()`로 선정업체·금액·대상공사를 뽑아 `store.merge_bid_extracted_fields()`로 **병합**(기존 7필드 덮지 않음). 게시판 전용 건은 이 공고문이 유일한 결과 원천. 백필: `scripts/backfill_results.py`, 검증: `scripts/test_result_extract.py`
 - 건축 투찰 불가 발주청은 `src/notifier.py`의 `ARCH_NOTIFY_BLOCKED_SITES`(과천시·과천도시공사·의왕시·양주시·부천시) — **알림만 제외, 수집·DB 저장은 유지**(모집·등록명부 공고 추적 필요). 토목·분야미표시는 그대로 발송. 사이트 매칭은 **정확 일치 필수** — "양주시"⊂"남양주시", "과천시"⊂"과천도시공사"라 부분매칭 쓰면 엉뚱한 곳이 막힘. 검증: `scripts/test_arch_block.py`

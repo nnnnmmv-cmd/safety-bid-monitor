@@ -24,13 +24,11 @@ from .utils import utc_now_iso
 
 logger: logging.Logger = logging.getLogger("safetybid")
 
-# 사이트별 추정가 상한 — 이 금액 이상은 발송에서 제외.
-# 안양시·과천시는 1억 이상 용역이 해당 시 소재 업체만 입찰 가능해서 자사에 무의미.
-# estimated_price=None(=가격 미파싱) 글은 통과 — 사용자가 확인.
-SITE_PRICE_CAP: dict[str, int] = {
-    "안양시": 100_000_000,
-    "과천시": 100_000_000,
-}
+# 금액 상한 필터 제거(2026-08-10): 안양시는 명부가 금액으로 갈리는데
+# '나'(1억 이상·경기도 업체)에 홈체크·한시진이 등록돼 있어 1억 이상이 오히려 투찰 대상이다.
+# 명부 규칙은 지자체마다 연 1회 갱신되므로 크롤러가 금액으로 거르면 규칙이 바뀔 때마다
+# 크롤러도 고쳐야 하고 그 사이 공고는 영영 못 본다.
+# → 수집은 넓게, 참가 가능 판정은 허브 한 곳에서 (기관·금액·법인 3조건).
 
 # 사이트별 분야 필터 — 여기 명시된 사이트만 해당 분야 글로 제한.
 # 사이트 category(명부 표시용)와 별개: 통합 게시판에 category가 한쪽으로 적힌 곳이 많아
@@ -91,14 +89,6 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
                         site.name, want_cat, post_cat, posting.title[:40],
                     )
                     continue
-            # 사이트별 추정가 상한 적용 (안양시·과천시 1억 이상 제외)
-            cap = SITE_PRICE_CAP.get(site.name)
-            if cap and posting.estimated_price and posting.estimated_price >= cap:
-                logger.info(
-                    "[%s] skip(>=%d만원): %s (%d원)",
-                    site.name, cap // 10_000, posting.title[:30], posting.estimated_price,
-                )
-                continue
             record = {
                 "notice_id": posting.notice_id,
                 "site_name": posting.site_name,
