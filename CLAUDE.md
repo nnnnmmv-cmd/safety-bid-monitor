@@ -33,6 +33,8 @@
 - `notified=True` 박힌 글은 cron 재처리 안 함. 강제 재발송 시 DB row 삭제 or `send_one_test.py`
 - notice_id는 detail URL의 고유 키(`notAncmtMgtNo`·`bbs_seq`·`sno` 등, `[?&]` 경계 매칭) 우선, 없으면 title 폴백 — **게시판 순번(row=N) 사용 금지** (순번은 새 글마다 밀려서 같은 글이 중복 인식됨. 2026-07 포천·구리·평택 48건 중복 사례). 키 추가 시 `_infer_notice_id`와 기존 DB 마이그레이션 동시 진행 필요
 - 경로형 상세 URL(쿼리 파라미터가 아닌 `/board/{id}` 형태)은 사이트 `selectors.detail_url_template`에 `https://.../{seq}` 지정 (성남시 사례). `_DETAIL_URL_RULES`는 쿼리형만 처리
+- **한 지자체에 게시판이 여러 개일 수 있다** (2026-08-10 전수 점검). 공고 메뉴 아래 고시공고/입찰정보/일반공고가 갈리고 우리 일이 안 읽는 쪽에 올라오는 경우가 있음 — 광주시 3개월 4건, 이천시 최신 262건, 시흥시 거모지구 전량 누락 사례. 새올(`portal/saeol/gosi`)은 `seCode`, eminwon은 `not_ancmt_se_code`로 갈림. **`seCode` 없이 요청하면 서버 기본값(고시 01)만 온다** — 이천시가 이 함정. 새올은 `searchType=tit&searchTxt=안전점검&searchPage=50` 제목검색이 GET으로 동작해 페이징 불필요.
+- **제목검색 키워드는 '안전'으로 (‘건설공사’ 금지)** — 안양시 `2026 소규모 노후 건축물 안전점검 신청 공고`처럼 제목에 '건설공사'가 없는 건축과 공고가 통째로 누락됨 (안양 0→44건).
 - 목록 1페이지가 10건인데 GET 페이징이 막힌 사이트(화성시)는 **list_url에 제목검색 파라미터를 박아** 대상 공고만 받게 할 것 — 안 그러면 게시량 많은 날 구조적 누락 (화성시 `q_sc=notAncmtSj&q_sv=안전점검`)
 - eminwon은 POST form이지만 **GET URL로도 detail 응답** (`OfrAction.do?method=selectOfrNotAncmt&not_ancmt_mgt_no=N&jndinm=OfrNotAncmtEJB&context=NTIS`)
 - openclaw proxy(`localhost:3456`)는 `claude-sonnet-4-5`/`4-6` 어느 쪽 요청도 응답 model이 `claude-sonnet-4`로 라우팅됨 (모델 선택권 우리에게 없음)
