@@ -205,7 +205,9 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
                 # 알림은 이미 위에서 처리했으므로 notified_at을 채워 허브 재알림을 막는다.
                 # 실패해도 수집·알림에는 영향 없음 (upsert_bid 내부에서 예외 흡수).
                 try:
-                    if hub_sync.upsert_bid(record):
+                    # extracted를 함께 넘겨야 presmpt_price(안전점검비용)가 채워진다 —
+                    # 허브가 이 값을 분모로 낙찰률을 계산한다
+                    if hub_sync.upsert_bid(record, extracted=extracted):
                         result_ef = extracted or {}
                         if result_ef.get("selected_company") or result_ef.get("selected_price"):
                             hub_sync.upsert_award(

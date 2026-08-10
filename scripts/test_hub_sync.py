@@ -62,6 +62,31 @@ def main() -> int:
     check(hub_sync.build_row(dict(rec, estimated_price=None))["presmpt_price"] is None, "None → null")
     check(hub_sync.build_row(dict(rec, estimated_price=0))["presmpt_price"] is None, "0 → null")
 
+    print("\n[6] 안전점검비용 파싱 — 낙찰률의 분모 (실측 표기)")
+    p = hub_sync.parse_inspection_cost
+    for raw, expect, why in [
+        ("6,600,000원(부가세포함)", 6600000, "기본"),
+        ("115,892,240원 (VAT 별도)", 115892240, "VAT 별도"),
+        ("금삼백만원(₩3,000,000원) (부가가치세 포함)", 3000000, "한글+기호 혼용"),
+        ("20,000,000원(부가세 별도), 기초금액 19,400,000원(97% 적용)", 20000000, "복수금액 → 첫 금액(정가)"),
+        ("6,000,000원 (정기안전점검 3회)", 6000000, "뒤 숫자에 오염 안 됨"),
+        ("24,000천원, 내사천 16,000천원", None, "천원 단위 → 저장 안 함(1000배 오류 방지)"),
+        ("3백만원(VAT별도)", None, "한글 금액만 → 저장 안 함"),
+        ("", None, "빈 값"),
+        (None, None, "None"),
+    ]:
+        check(p(raw) == expect, f"{why}: {str(raw)[:34]!r} → {p(raw)}")
+
+    print("\n[7] 기준금액 채우기 — 결과공고에는 넣지 않는다")
+    ex = {"inspection_cost": "9,000,000원(부가세 별도)"}
+    check(hub_sync.build_row(rec, extracted=ex)["presmpt_price"] == 9000000, "지정공고 → inspection_cost 저장")
+    res = dict(rec, title="건설공사 안전점검 수행기관 지정 결과 공고(정자동 117)")
+    check(hub_sync.build_row(res, extracted=ex)["presmpt_price"] is None,
+          "결과공고 → null (기준=낙찰이면 낙찰률 100%로 무의미)")
+    no_ex = dict(rec, estimated_price=5000000)
+    check(hub_sync.build_row(no_ex, extracted=None)["presmpt_price"] == 5000000,
+          "LLM 추출 없으면 estimated_price 폴백")
+
     print(f"\n{'전체 통과' if failed == 0 else f'❌ {failed}건 실패'}")
     return 1 if failed else 0
 

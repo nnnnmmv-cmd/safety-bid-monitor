@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -56,6 +57,49 @@ def _deadline(record: dict[str, Any]) -> str | None:
     return None
 
 
+_AMOUNT_RE = re.compile(r"([0-9][0-9,]*)\s*원")
+# '24,000천원' 처럼 천원 단위로 적힌 공고 — 그대로 읽으면 1000배 어긋나므로 저장하지 않는다
+_THOUSAND_WON_RE = re.compile(r"[0-9][0-9,]*\s*천\s*원")
+# 안전점검 용역 현실 범위. 벗어나면 오인식으로 보고 버린다
+_COST_MIN, _COST_MAX = 50_000, 10**11
+
+
+def parse_inspection_cost(text: str | None) -> int | None:
+    """공고문 안전점검비용 문자열 → 정수(원). 애매하면 None.
+
+    실측 표기: '6,600,000원(부가세포함)', '금삼백만원(₩3,000,000원)',
+    '20,000,000원(부가세 별도), 기초금액 19,400,000원(97% 적용)' 등.
+    복수 금액이 적힌 건 첫 금액(= 안전점검비용 정가)을 쓴다 — 단일 금액 공고와 기준을 맞추기 위해.
+    """
+    if not text:
+        return None
+    if _THOUSAND_WON_RE.search(text):
+        return None
+    for m in _AMOUNT_RE.finditer(text):
+        try:
+            value = int(m.group(1).replace(",", ""))
+        except (ValueError, OverflowError):
+            continue
+        if _COST_MIN <= value <= _COST_MAX:
+            return value
+    return None
+
+
+def _base_price(record: dict[str, Any], extracted: dict[str, Any] | None) -> int | None:
+    """허브 presmpt_price(기준금액) — 낙찰률 계산의 분모.
+
+    결과 공고에는 넣지 않는다. 기준금액 칸에 낙찰금액이 들어가면 낙찰률이 100%로 나와 무의미.
+    """
+    if summarizer.is_result_notice(record.get("title") or ""):
+        return None
+    cost = parse_inspection_cost((extracted or {}).get("inspection_cost"))
+    if cost:
+        return cost
+    # 폴백: 본문 정규식으로 뽑아둔 값 (LLM 추출이 없던 공고용)
+    price = record.get("estimated_price")
+    return int(price) if isinstance(price, int) and price > 0 else None
+
+
 def _relevance(record: dict[str, Any]) -> str:
     """크롤러 판정 신뢰도 → likely / maybe.
 
@@ -72,9 +116,16 @@ def _relevance(record: dict[str, Any]) -> str:
     return "maybe"
 
 
-def build_row(record: dict[str, Any], notified_at: str | None = None) -> dict[str, Any]:
-    """bids 레코드 → arch_bid_notices 행."""
-    price = record.get("estimated_price")
+def build_row(
+    record: dict[str, Any],
+    notified_at: str | None = None,
+    extracted: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """bids 레코드 → arch_bid_notices 행.
+
+    extracted: LLM 추출 결과(extracted_fields). inspection_cost로 기준금액을 채운다 —
+    허브가 이걸 분모로 낙찰률을 계산하므로 지정·모집 공고에선 사실상 필수 값.
+    """
     return {
         "source": SOURCE,
         # notice_id는 이미 "사이트명::키=값" 형태라 사이트 간 충돌 없음
@@ -82,7 +133,7 @@ def build_row(record: dict[str, Any], notified_at: str | None = None) -> dict[st
         "bid_ntce_ord": ORD,
         "title": record.get("title") or "",
         "institution": record.get("org") or record.get("site_name") or "",
-        "presmpt_price": int(price) if isinstance(price, int) and price > 0 else None,
+        "presmpt_price": _base_price(record, extracted),
         "notice_dt": _iso(record.get("posted_at")),
         "bid_clse_dt": _deadline(record),
         "detail_url": record.get("url") or "",
@@ -92,10 +143,14 @@ def build_row(record: dict[str, Any], notified_at: str | None = None) -> dict[st
     }
 
 
-def upsert_bid(record: dict[str, Any], notified_at: str | None = None) -> bool:
+def upsert_bid(
+    record: dict[str, Any],
+    notified_at: str | None = None,
+    extracted: dict[str, Any] | None = None,
+) -> bool:
     """공고 1건을 허브에 upsert. 실패해도 예외를 올리지 않는다(호출측 흐름 보호)."""
     try:
-        row = build_row(record, notified_at)
+        row = build_row(record, notified_at, extracted)
         if not row["bid_ntce_no"]:
             return False
         _hub_client().table("arch_bid_notices").upsert(
@@ -104,6 +159,26 @@ def upsert_bid(record: dict[str, Any], notified_at: str | None = None) -> bool:
         return True
     except Exception as exc:
         logger.warning("[hub] upsert 실패 (%s): %s", str(record.get("notice_id"))[:40], exc)
+        return False
+
+
+def update_base_price(notice_id: str, price: int | None) -> bool:
+    """이미 들어간 허브 행의 기준금액만 갱신.
+
+    upsert는 ignore_duplicates라 기존 행을 안 건드리므로, 뒤늦게 확보한
+    안전점검비용을 채울 땐 이 함수를 쓴다.
+    """
+    if not price:
+        return False
+    try:
+        (
+            _hub_client().table("arch_bid_notices").update({"presmpt_price": price})
+            .eq("source", SOURCE).eq("bid_ntce_no", notice_id).eq("bid_ntce_ord", ORD)
+            .execute()
+        )
+        return True
+    except Exception as exc:
+        logger.warning("[hub] 기준금액 갱신 실패 (%s): %s", notice_id[:40], exc)
         return False
 
 
