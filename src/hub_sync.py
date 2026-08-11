@@ -30,6 +30,18 @@ ORD: str = "000"
 DEFAULT_DEADLINE_DAYS: int = 14
 
 
+# 나라장터에 같은 공고가 그대로 올라오는 게시판 — 허브엔 이미 source='g2b' 행이 들어와 있어
+# local로 또 넣으면 채널에 같은 공고가 두 줄로 뜬다 (광주시 실측 3건, 제목 완전일치).
+# 수집·bids 저장은 그대로 둔다 — 게시판 전용 건이 섞여 올 때 DB에는 남아 있어야 하고,
+# 결과공고 선정업체 추출도 이 본문이 원천이다. 허브 upsert만 건너뛴다.
+HUB_UPSERT_SKIP_SITES: frozenset[str] = frozenset({"광주시-입찰정보"})
+
+
+def should_skip_hub(site_name: str | None) -> bool:
+    """이 게시판 공고를 허브에 넣지 않는가 — 나라장터 중복 방지. 정확 일치."""
+    return (site_name or "") in HUB_UPSERT_SKIP_SITES
+
+
 def _iso(value: Any) -> str | None:
     if not value:
         return None
@@ -224,6 +236,10 @@ def upsert_bid(
 ) -> bool:
     """공고 1건을 허브에 upsert. 실패해도 예외를 올리지 않는다(호출측 흐름 보호)."""
     try:
+        if should_skip_hub(record.get("site_name")):
+            logger.info("[hub] 나라장터 중복 게시판 — upsert 생략: %s",
+                        str(record.get("title"))[:40])
+            return False
         row = build_row(record, notified_at, extracted)
         if not row["bid_ntce_no"]:
             return False

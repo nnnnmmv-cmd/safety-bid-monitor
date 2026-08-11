@@ -124,6 +124,12 @@ def main() -> int:
     check(row["reg_deadline_dt"].startswith("2026-08-31T18:00"), "접수기간 있으면 실제 마감 저장")
     check(hub_sync.build_row(rec2, extracted={})["reg_deadline_dt"] is None, "접수기간 없으면 null")
 
+    print("\n[10] 나라장터 중복 게시판은 허브에 안 넣는다 (수집·bids 저장은 유지)")
+    check(hub_sync.should_skip_hub("광주시-입찰정보"), "광주시-입찰정보 → 생략 (g2b 행과 제목 완전일치 3건)")
+    check(not hub_sync.should_skip_hub("광주시"), "광주시 고시공고는 그대로 — 등록명부·모집·개찰결과는 게시판 전용")
+    check(not hub_sync.should_skip_hub("광주시-입찰정보-토목"), "정확 일치 — 부분매칭으로 엉뚱한 곳 막지 않음")
+    check(not hub_sync.should_skip_hub(None), "None 안전")
+
     print(f"\n{'전체 통과' if failed == 0 else f'❌ {failed}건 실패'}")
     return 1 if failed else 0
 
