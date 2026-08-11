@@ -182,6 +182,61 @@ def _reg_deadline(record: dict[str, Any], extracted: dict[str, Any] | None) -> s
     return end.isoformat() if end else None
 
 
+# 링크 글자가 파일명이 아니라 버튼 문구인 게시판이 있다 (남양주시 '내려받기').
+# 허브가 이름으로 공고문을 고르므로 그대로 두면 후보에서 탈락한다.
+_GENERIC_LINK_LABELS: frozenset[str] = frozenset({
+    "내려받기", "다운로드", "다운받기", "바로보기", "미리보기", "보기",
+    "첨부파일", "첨부", "파일", "download", "view",
+})
+# URL에 원본 파일명을 담는 파라미터 (eminwon user_file_nm 계열)
+_URL_NAME_KEYS: tuple[str, ...] = ("user_file_nm", "orgFileNm", "fileName", "fileNm", "originalName")
+_EXT_RE = re.compile(r"\.[A-Za-z0-9]{2,5}$")
+
+
+def _clean_doc_name(name: str, url: str) -> str:
+    """첨부 표시명 정리 — 허브의 공고문 고르기가 이름에 걸려 있어 최대한 원본 파일명으로.
+
+    게시판이 넣는 non-breaking space(안산시)를 보통 공백으로 펴고,
+    버튼 문구이거나 확장자가 없으면 URL 파라미터에서 원본 파일명을 되찾는다.
+    """
+    name = " ".join((name or "").replace("\xa0", " ").split())
+    if name and name.lower() not in _GENERIC_LINK_LABELS and _EXT_RE.search(name):
+        return name
+    from urllib.parse import parse_qs, unquote, urlparse
+
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    for key in _URL_NAME_KEYS:
+        raw = (params.get(key) or [""])[0]
+        cand = " ".join(unquote(raw).replace("\xa0", " ").split())
+        if cand and _EXT_RE.search(cand):
+            return cand
+    base = " ".join(unquote(parsed.path.rsplit("/", 1)[-1]).split())
+    if base and _EXT_RE.search(base):
+        return base
+    return name
+
+
+def build_spec_docs(attachments: Any) -> list[dict[str, str]] | None:
+    """첨부 목록 → 허브 spec_docs 형식 [{"url","name"}]. 게시 순서 유지, 없으면 None.
+
+    허브가 이 이름으로 공고문을 골라 알림에 📎 링크를 붙인다(noticeDocLink).
+    순서를 지켜야 하는 이유: 공고문이 첫 번째라는 보장이 없다(예산군 5개 중 5번째).
+    attachments: Attachment 객체 또는 {"name","url"} dict의 리스트 둘 다 받는다.
+    """
+    docs: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for a in attachments or []:
+        url = (getattr(a, "url", None) or (a.get("url") if isinstance(a, dict) else "")) or ""
+        name = (getattr(a, "name", None) or (a.get("name") if isinstance(a, dict) else "")) or ""
+        url, name = str(url).strip(), str(name).strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        docs.append({"url": url, "name": _clean_doc_name(name, url)})
+    return docs or None
+
+
 def _relevance(record: dict[str, Any]) -> str:
     """크롤러 판정 신뢰도 → likely / maybe.
 
@@ -202,6 +257,7 @@ def build_row(
     record: dict[str, Any],
     notified_at: str | None = None,
     extracted: dict[str, Any] | None = None,
+    attachments: Any = None,
 ) -> dict[str, Any]:
     """bids 레코드 → arch_bid_notices 행.
 
@@ -226,6 +282,8 @@ def build_row(
         "relevance": _relevance(record),
         # 비워 둬야 허브 아침 알림에 실린다. 채우는 건 과거 공고 소급 upsert뿐
         "notified_at": notified_at,
+        # 공고문 첨부 링크 — 허브 알림 줄의 📎공고문이 여기서 나온다
+        "spec_docs": build_spec_docs(attachments),
     }
 
 
@@ -233,6 +291,7 @@ def upsert_bid(
     record: dict[str, Any],
     notified_at: str | None = None,
     extracted: dict[str, Any] | None = None,
+    attachments: Any = None,
 ) -> bool:
     """공고 1건을 허브에 upsert. 실패해도 예외를 올리지 않는다(호출측 흐름 보호)."""
     try:
@@ -240,7 +299,7 @@ def upsert_bid(
             logger.info("[hub] 나라장터 중복 게시판 — upsert 생략: %s",
                         str(record.get("title"))[:40])
             return False
-        row = build_row(record, notified_at, extracted)
+        row = build_row(record, notified_at, extracted, attachments)
         if not row["bid_ntce_no"]:
             return False
         _hub_client().table("arch_bid_notices").upsert(
@@ -269,6 +328,22 @@ def update_base_price(notice_id: str, price: int | None) -> bool:
         return True
     except Exception as exc:
         logger.warning("[hub] 기준금액 갱신 실패 (%s): %s", notice_id[:40], exc)
+        return False
+
+
+def update_spec_docs(notice_id: str, docs: list[dict[str, str]] | None) -> bool:
+    """이미 들어간 허브 행의 공고문 첨부 링크만 갱신 (백필용)."""
+    if not docs:
+        return False
+    try:
+        (
+            _hub_client().table("arch_bid_notices").update({"spec_docs": docs})
+            .eq("source", SOURCE).eq("bid_ntce_no", notice_id).eq("bid_ntce_ord", ORD)
+            .execute()
+        )
+        return True
+    except Exception as exc:
+        logger.warning("[hub] 첨부링크 갱신 실패 (%s): %s", notice_id[:40], exc)
         return False
 
 

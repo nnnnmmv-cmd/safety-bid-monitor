@@ -130,6 +130,26 @@ def main() -> int:
     check(not hub_sync.should_skip_hub("광주시-입찰정보-토목"), "정확 일치 — 부분매칭으로 엉뚱한 곳 막지 않음")
     check(not hub_sync.should_skip_hub(None), "None 안전")
 
+    print("\n[11] spec_docs — 허브 알림 줄의 📎공고문 링크 원천")
+    from types import SimpleNamespace
+    A = lambda n, u: SimpleNamespace(name=n, url=u)
+    docs = hub_sync.build_spec_docs([A("공고문.pdf", "https://x/a"), A("서식.hwp", "https://x/b")])
+    check(docs == [{"url": "https://x/a", "name": "공고문.pdf"},
+                   {"url": "https://x/b", "name": "서식.hwp"}], "[{url,name}] 형식 + 게시 순서 유지")
+    check(hub_sync.build_spec_docs([]) is None, "첨부 없으면 None (빈 배열 아님)")
+    dup = hub_sync.build_spec_docs([A("a.pdf", "https://x/a"), A("a.pdf", "https://x/a")])
+    check(len(dup) == 1, "같은 URL 중복 제거")
+    check(hub_sync.build_spec_docs([A("n", "")]) is None, "URL 없는 첨부는 버림")
+
+    print("\n[12] 첨부 표시명 보정 — 허브가 이름으로 공고문을 고른다")
+    c = hub_sync._clean_doc_name
+    check(c("내려받기", "https://x/FileDown.jsp?user_file_nm=%5B%EA%B3%B5%EA%B3%A0%EB%AC%B8%5D.hwp")
+          == "[공고문].hwp", "버튼 문구 → URL의 원본 파일명 복원 (남양주시)")
+    check(c("건설공사\xa0안전점검\xa0공고.pdf", "https://x/y") == "건설공사 안전점검 공고.pdf",
+          "non-breaking space → 보통 공백 (안산시)")
+    check(c("송현천 공고문.pdf", "https://x/y") == "송현천 공고문.pdf", "멀쩡한 이름은 그대로")
+    check(c("바로보기", "https://x/y?nofile=1") == "바로보기", "복원 불가면 원래 문구 유지")
+
     print(f"\n{'전체 통과' if failed == 0 else f'❌ {failed}건 실패'}")
     return 1 if failed else 0
 

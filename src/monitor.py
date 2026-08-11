@@ -219,7 +219,9 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
                 try:
                     # extracted를 함께 넘겨야 presmpt_price(안전점검비용)가 채워진다 —
                     # 허브가 이 값을 분모로 낙찰률을 계산한다
-                    if hub_sync.upsert_bid(record, extracted=extracted):
+                    # 첨부는 posting에서 직접 넘긴다 — bids엔 첨부 컬럼이 없어 나중엔 못 구한다
+                    if hub_sync.upsert_bid(record, extracted=extracted,
+                                           attachments=posting.attachments):
                         result_ef = extracted or {}
                         if result_ef.get("selected_company") or result_ef.get("selected_price"):
                             hub_sync.upsert_award(
