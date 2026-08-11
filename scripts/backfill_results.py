@@ -90,17 +90,24 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, default=0, help="0=전량")
+    ap.add_argument("--retry-empty", action="store_true",
+                    help="result_kind는 박혔는데 선정업체·금액이 빈 건도 재시도 "
+                         "(첫 추출이 본문만 보고 빈손으로 끝난 건 — 여기선 첨부를 다시 받아 본다)")
     args = ap.parse_args()
 
     rows = store.client().table("bids").select(
         "notice_id, site_name, title, url, body_excerpt, extracted_fields"
     ).limit(2000).execute().data or []
     targets = [r for r in rows if summarizer.is_result_notice(r.get("title") or "")]
-    # 이미 결과 키가 채워진 건 skip (재실행 안전)
+    # 이미 값이 찬 건 skip (재실행 안전). --retry-empty면 result_kind만 박히고
+    # 값이 빈 건까지 대상에 넣는다 — 그 표시는 '시도했다'는 뜻일 뿐 '없다'는 뜻이 아니다.
+    def _empty(ef: dict[str, Any]) -> bool:
+        return not ef.get("selected_company") and not ef.get("selected_price")
+
     todo = [
         r for r in targets
-        if not (r.get("extracted_fields") or {}).get("selected_company")
-        and not (r.get("extracted_fields") or {}).get("result_kind")
+        if _empty(r.get("extracted_fields") or {})
+        and (args.retry_empty or not (r.get("extracted_fields") or {}).get("result_kind"))
     ]
     if args.limit:
         todo = todo[: args.limit]
