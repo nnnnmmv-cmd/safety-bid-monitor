@@ -6,6 +6,11 @@
 - sites/keywords는 `sites.yaml`이 아닌 **Supabase DB**에서 로드 (`sites.yaml`엔 예시만)
 - 로그: `logs/monitor.log`, macOS launchd cron: KST 9·12·15·18·21·0·3·6시 5분
 
+## 담당 구분
+- 이 저장소(크롤러)는 맥 세션, **허브(sales-hub)는 윈도우 세션 담당 — 허브 코드는 수정하지 않는다.**
+- 허브 DB `arch_bid_notices`에 쓰는 건 크롤러 몫: `source='local'` 행의 upsert/삭제, g2b 행의 `requirements`·`extract_status`·`extracted_at`. 그 외 칸·다른 source 행은 건드리지 않는다.
+- 표시·판정 로직(토목 제외, 명부 판정, 중복 접기, 마감 판정, 🏁 카드)은 전부 허브 쪽. 크롤러는 데이터만 정확히 넣는다.
+
 ## 검증 스크립트
 - `.venv/bin/python scripts/test_site.py --name "사이트명" --no-filter --hours 720` — 어댑터 raw 추출 확인
 - `.venv/bin/python scripts/send_one_test.py --name "사이트명"` — 한 글 강제 슬랙 발송 (DB 안 건드림)
