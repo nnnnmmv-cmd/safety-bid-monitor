@@ -54,6 +54,7 @@ def main() -> int:
     print(f"  bid_clse_dt 채워짐: {with_dl}건 (그 중 마감 전 = 허브 목록 노출: {future}건)")
     print(f"  notified_at 채워짐: {sum(1 for _, b in built if b['notified_at'])}건")
     print(f"  presmpt_price(기준금액) 채워짐: {sum(1 for _, b in built if b['presmpt_price'])}건")
+    print(f"  reg_deadline_dt(접수마감) 채워짐: {sum(1 for _, b in built if b['reg_deadline_dt'])}건")
 
     if args.dry_run:
         print("\n샘플 3건:")
@@ -63,7 +64,7 @@ def main() -> int:
         print("\n--dry-run — 허브에 쓰지 않았습니다.")
         return 0
 
-    ok = fail = award = base = 0
+    ok = fail = award = base = regdl = 0
     for r, row in built:
         if hub_sync.upsert_bid(r, notified_at=r.get("fetched_at"),
                                extracted=r.get("extracted_fields")):
@@ -72,13 +73,15 @@ def main() -> int:
             # 뒤늦게 확보한 기준금액은 update로 따로 채운다
             if row["presmpt_price"] and hub_sync.update_base_price(r["notice_id"], row["presmpt_price"]):
                 base += 1
+            if row["reg_deadline_dt"] and hub_sync.update_reg_deadline(r["notice_id"], row["reg_deadline_dt"]):
+                regdl += 1
             ef = r.get("extracted_fields") or {}
             if ef.get("selected_company") or ef.get("selected_price"):
                 if hub_sync.upsert_award(r["notice_id"], ef.get("selected_company"), ef.get("selected_price")):
                     award += 1
         else:
             fail += 1
-    print(f"\n완료 — upsert {ok}건 / 실패 {fail}건 / 기준금액 반영 {base}건 / award 반영 {award}건")
+    print(f"\n완료 — upsert {ok}건 / 실패 {fail}건 / 기준금액 {base}건 / 접수마감 {regdl}건 / award {award}건")
     return 0
 
 

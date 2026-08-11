@@ -100,6 +100,73 @@ def _base_price(record: dict[str, Any], extracted: dict[str, Any] | None) -> int
     return int(price) if isinstance(price, int) and price > 0 else None
 
 
+# 접수기간 파싱 — '2026. 8. 7.(금) 9:00 ~ 8. 31.(월) 18:00' / '2026-07-07 09:00 ~ 2026-07-13 18:00' 등
+_PERIOD_DATE_RE = re.compile(r"(?:(\d{4})\s*[.\-/]\s*)?(\d{1,2})\s*[.\-/]\s*(\d{1,2})\s*\.?")
+_PERIOD_TIME_RE = re.compile(r"(\d{1,2}):(\d{2})")
+# 마감 시각이 안 적힌 공고는 업무 종료 시각으로 본다 (00:00로 두면 하루 일찍 만료 처리됨)
+_DEFAULT_CLOSE_HOUR: int = 18
+
+
+def parse_reg_deadline(bid_period: str | None, posted_at: Any = None) -> datetime | None:
+    """공고문 접수기간 문자열 → 접수 마감 datetime. 애매하면 None.
+
+    - '/' 뒤에 붙는 별도 일정(서류 접수일 등)은 접수마감이 아니므로 잘라낸다
+    - 마지막 날짜를 마감일로, 그 뒤 마지막 시각을 마감 시각으로 (없으면 18:00)
+    - 끝 날짜에 연도가 없으면 시작 연도를 물려받고, 시작보다 이르면 해를 넘긴 것으로 본다
+    - 게시일보다 이르거나 400일 넘게 먼 값은 공고문 오기로 보고 버린다
+    """
+    if not bid_period:
+        return None
+    head = bid_period.split("/")[0]
+    if not _PERIOD_DATE_RE.search(head):
+        head = bid_period
+
+    found: list[tuple[int, int | None, int, int]] = []
+    for m in _PERIOD_DATE_RE.finditer(head):
+        year, month, day = m.group(1), int(m.group(2)), int(m.group(3))
+        if not (1 <= month <= 12 and 1 <= day <= 31):
+            continue  # 지번('466-2') 등 오매칭 방어
+        found.append((m.end(), int(year) if year else None, month, day))
+    if not found:
+        return None
+
+    pos, year, month, day = found[-1]
+    if year is None:
+        year = next((y for _, y, _, _ in found if y), None)
+        if year is None:
+            posted = _as_dt(posted_at)
+            if posted is None:
+                return None
+            year = posted.year
+        _, _, start_month, start_day = found[0]
+        if (month, day) < (start_month, start_day):
+            year += 1
+
+    times = _PERIOD_TIME_RE.findall(head[pos:])
+    hour, minute = (int(times[-1][0]), int(times[-1][1])) if times else (_DEFAULT_CLOSE_HOUR, 0)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        hour, minute = _DEFAULT_CLOSE_HOUR, 0
+
+    try:
+        end = datetime(year, month, day, hour, minute)
+    except ValueError:
+        return None
+
+    posted = _as_dt(posted_at)
+    if posted is not None:
+        base = posted.replace(tzinfo=None)
+        # 공고문에 연도를 잘못 적은 사례가 실제로 있어(2026 게시글에 2025 마감) 방어
+        if end < base - timedelta(days=1) or end > base + timedelta(days=400):
+            return None
+    return end
+
+
+def _reg_deadline(record: dict[str, Any], extracted: dict[str, Any] | None) -> str | None:
+    """extracted_fields.bid_period에서 실제 접수 마감을 뽑아 ISO 문자열로."""
+    end = parse_reg_deadline((extracted or {}).get("bid_period"), record.get("posted_at"))
+    return end.isoformat() if end else None
+
+
 def _relevance(record: dict[str, Any]) -> str:
     """크롤러 판정 신뢰도 → likely / maybe.
 
@@ -136,6 +203,8 @@ def build_row(
         "presmpt_price": _base_price(record, extracted),
         "notice_dt": _iso(record.get("posted_at")),
         "bid_clse_dt": _deadline(record),
+        # 공고문에 명시된 실제 접수 마감 — 있으면 허브가 게시일+14일 추정 대신 이걸 쓴다
+        "reg_deadline_dt": _reg_deadline(record, extracted),
         "detail_url": record.get("url") or "",
         "relevance": _relevance(record),
         # 크롤러가 자체 슬랙 알림을 이미 보냈으므로 반드시 채운다 (허브 재알림 방지)
@@ -179,6 +248,22 @@ def update_base_price(notice_id: str, price: int | None) -> bool:
         return True
     except Exception as exc:
         logger.warning("[hub] 기준금액 갱신 실패 (%s): %s", notice_id[:40], exc)
+        return False
+
+
+def update_reg_deadline(notice_id: str, deadline_iso: str | None) -> bool:
+    """이미 들어간 허브 행의 접수 마감만 갱신 (백필용)."""
+    if not deadline_iso:
+        return False
+    try:
+        (
+            _hub_client().table("arch_bid_notices").update({"reg_deadline_dt": deadline_iso})
+            .eq("source", SOURCE).eq("bid_ntce_no", notice_id).eq("bid_ntce_ord", ORD)
+            .execute()
+        )
+        return True
+    except Exception as exc:
+        logger.warning("[hub] 접수마감 갱신 실패 (%s): %s", notice_id[:40], exc)
         return False
 
 
