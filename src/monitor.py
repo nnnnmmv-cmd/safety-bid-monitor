@@ -39,11 +39,25 @@ logger: logging.Logger = logging.getLogger("safetybid")
 SITE_CATEGORY_FILTER: dict[str, str] = {}
 
 
+def _env_true(name: str) -> bool:
+    import os
+    return os.getenv(name, "").lower() in ("1", "true", "yes")
+
+
 def _notify_disabled() -> bool:
     # .env의 NOTIFY_DISABLED=true 면 슬랙 발송 일시 중지.
     # 크롤링·DB·LLM은 계속 돌고, 발송만 skip → 다시 켜면 보류된 글 한꺼번에 발송.
-    import os
-    return os.getenv("NOTIFY_DISABLED", "").lower() in ("1", "true", "yes")
+    return _env_true("NOTIFY_DISABLED")
+
+
+def _notify_via_hub() -> bool:
+    """알림 주체가 허브(sales-hub 용역허브 채널)인가 — .env의 NOTIFY_VIA_HUB=true (2026-08-11 일원화).
+
+    _notify_disabled와 다르다: 저쪽은 '나중에 몰아서 보낼 보류'라 notified=False로 남기지만,
+    이쪽은 허브가 대신 보내므로 notified=True로 닫는다(안 그러면 미발송이 끝없이 쌓인다).
+    허브는 arch_bid_notices.notified_at이 빈 공고를 아침에 알리므로 hub_sync가 그 칸을 비워 둔다.
+    """
+    return _env_true("NOTIFY_VIA_HUB")
 
 
 def _setup_logging() -> None:
@@ -171,7 +185,15 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
                 row_for_send["attachments_raw"] = [
                     {"name": a.name, "url": a.url} for a in (posting.attachments or [])[:10]
                 ]
-                if _notify_disabled():
+                if _notify_via_hub():
+                    # 알림 주체가 허브 — 자체 슬랙은 안 보내고 notified만 닫는다.
+                    # 허브는 아래 upsert된 행(notified_at=null)을 아침 알림에 싣는다.
+                    store.mark_notified([record["notice_id"]])
+                    logger.info(
+                        "[%s] 자체 발송 생략(허브 알림): %s",
+                        site.name, record["title"][:30],
+                    )
+                elif _notify_disabled():
                     # 발송 보류 — notified=False 유지로 다시 켰을 때 누락 없이 받음
                     logger.info(
                         "[%s] 발송 보류 (NOTIFY_DISABLED=true): %s",
@@ -192,8 +214,8 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
                     logger.warning("[%s] 발송 실패: %s", site.name, record["title"][:30])
 
                 # 4) 허브 arch_bid_notices에도 upsert (source='local') — 허브 입찰 관리 화면 합류.
-                # 알림은 이미 위에서 처리했으므로 notified_at을 채워 허브 재알림을 막는다.
-                # 실패해도 수집·알림에는 영향 없음 (upsert_bid 내부에서 예외 흡수).
+                # notified_at은 비운다 — 허브가 이 공고를 아침 알림에 실어야 한다.
+                # 실패해도 수집에는 영향 없음 (upsert_bid 내부에서 예외 흡수).
                 try:
                     # extracted를 함께 넘겨야 presmpt_price(안전점검비용)가 채워진다 —
                     # 허브가 이 값을 분모로 낙찰률을 계산한다
@@ -279,7 +301,11 @@ def run_once() -> None:
         total_fetched, total_inserted, len(new_rows),
     )
 
-    if new_rows and _notify_disabled():
+    if new_rows and _notify_via_hub():
+        # 허브가 알린다 — 자체 발송 없이 notified만 닫아 미발송이 쌓이지 않게 한다
+        store.mark_notified([str(r["notice_id"]) for r in new_rows])
+        logger.info("NOTIFY_VIA_HUB=true — fallback %d건 자체 발송 생략(허브 알림)", len(new_rows))
+    elif new_rows and _notify_disabled():
         logger.info("NOTIFY_DISABLED=true — fallback 알림 %d건 보류", len(new_rows))
     elif new_rows:
         try:

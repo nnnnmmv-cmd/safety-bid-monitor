@@ -4,8 +4,11 @@
 마감 알림)에 합류시킨다. 허브는 이미 source='local'을 처리하도록 배포돼 있어
 이 upsert만으로 붙는다.
 
-- 기존 bids 저장·자체 슬랙 알림은 그대로 (이중 저장 기간 허용)
-- notified_at을 반드시 채운다 — 비우면 허브 아침 cron이 같은 공고를 또 알린다
+- 기존 bids 저장은 그대로 (이중 저장 기간 허용)
+- notified_at은 비워 둔다 — 허브 아침 알림은 이 칸이 빈 공고만 싣는다.
+  2026-08-11 알림 일원화 전까지는 크롤러가 자체 슬랙을 보내며 이 칸을 채웠고,
+  그래서 지자체 공고가 허브 알림에 한 번도 실리지 않았다. 지금은 허브가 알린다.
+  과거 공고를 소급 upsert할 때만 notified_at을 넘긴다(이미 크롤러가 알린 건이라 재알림 방지)
 - upsert는 (source, bid_ntce_no, bid_ntce_ord) 충돌 시 무시 → 재수집 멱등
 """
 from __future__ import annotations
@@ -192,6 +195,8 @@ def build_row(
 
     extracted: LLM 추출 결과(extracted_fields). inspection_cost로 기준금액을 채운다 —
     허브가 이걸 분모로 낙찰률을 계산하므로 지정·모집 공고에선 사실상 필수 값.
+    notified_at: 넘기지 않으면 null — 허브가 이 공고를 아침 알림에 싣는다.
+    이미 알림이 나간 과거 공고를 소급 upsert할 때만 넘긴다.
     """
     return {
         "source": SOURCE,
@@ -207,8 +212,8 @@ def build_row(
         "reg_deadline_dt": _reg_deadline(record, extracted),
         "detail_url": record.get("url") or "",
         "relevance": _relevance(record),
-        # 크롤러가 자체 슬랙 알림을 이미 보냈으므로 반드시 채운다 (허브 재알림 방지)
-        "notified_at": notified_at or datetime.now(timezone.utc).isoformat(),
+        # 비워 둬야 허브 아침 알림에 실린다. 채우는 건 과거 공고 소급 upsert뿐
+        "notified_at": notified_at,
     }
 
 

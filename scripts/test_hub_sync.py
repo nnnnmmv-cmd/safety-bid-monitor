@@ -39,10 +39,11 @@ def main() -> int:
     check(r["detail_url"] == "https://ansan.go.kr/x", "detail_url = url")
     check(r["notice_dt"] == POSTED.isoformat(), "notice_dt = posted_at")
 
-    print("\n[2] notified_at — 비면 허브 이중알림 발생")
-    check(bool(r["notified_at"]), "기본값으로 현재 시각 채워짐")
+    print("\n[2] notified_at — 비워야 허브 아침 알림에 실린다 (2026-08-11 알림 일원화)")
+    check(r["notified_at"] is None, "신규 공고는 null — 채우면 허브가 영영 안 알린다")
     r2 = hub_sync.build_row(rec, notified_at="2026-08-05T00:00:00+00:00")
-    check(r2["notified_at"] == "2026-08-05T00:00:00+00:00", "명시값 우선(백필 시 fetched_at 사용)")
+    check(r2["notified_at"] == "2026-08-05T00:00:00+00:00",
+          "과거 소급분만 명시(백필 시 fetched_at) — 이미 크롤러가 알린 건이라 재알림 방지")
 
     print("\n[3] bid_clse_dt — 마감 미상이면 게시일+14일")
     check(r["bid_clse_dt"] == (POSTED + timedelta(days=14)).isoformat(), "deadline_at 없음 → posted_at+14일")
