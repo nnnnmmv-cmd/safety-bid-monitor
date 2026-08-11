@@ -290,6 +290,8 @@ def run_once() -> None:
         total_inserted += inserted
         if err:
             errors.append(err)
+        # 방문 기록은 새 글이 없어도 남긴다 — 없으면 죽은 게시판과 조용한 게시판을 구분할 수 없다
+        store.log_site_health(site.name, err or "ok", inserted, fetched)
 
     # 새 흐름: 각 사이트 INSERT 직후 즉시 발송하므로 여기 unnotified는 대부분 비어 있음.
     # 다만 이전 실행에서 발송 실패 등으로 남은 미발송이 있다면 첨부 없이 fallback 발송.

@@ -35,6 +35,9 @@
 - **알림 주체는 허브** (2026-08-11~). `.env`의 `NOTIFY_VIA_HUB=true`면 크롤러 자체 슬랙 발송을 건너뛰고 `bids.notified`만 닫는다 — 수집·DB·LLM·허브 upsert는 그대로. `NOTIFY_DISABLED`(보류, notified=False 유지)와 **다르다**: 이쪽은 허브가 대신 보내므로 notified=True로 닫아야 미발송이 안 쌓인다. 허브 쪽 판정(토목 제외·명부 미등록 발주청 제외·법인별 참가 가능·마감 판정)이 크롤러엔 없어서 옮긴 것. 되돌리려면 false.
 - `notifier.ARCH_NOTIFY_BLOCKED_SITES`·`_classify_post_category`·채널 분기는 `NOTIFY_VIA_HUB=true`에선 사실상 미사용 (자체 발송이 없음). 롤백 대비로 남겨 둔 코드지 죽은 코드가 아니다.
 
+- 게시판 방문 기록은 `store.log_site_health()` → `bid_collection_health`(site_name·run_at·reason·posts_saved·posts_fetched). 사이클마다 사이트당 1행, **새 글이 0건이어도 남긴다** — 흔적이 없으면 죽은 게시판과 원래 조용한 게시판을 구분할 수 없다. `posts_fetched=0`이면 조용한 게 아니라 목록이 안 읽히는 것. 기록 실패는 삼키고 수집을 계속한다. 테이블 DDL: `scripts/bid_collection_health.sql`
+- 크롤러 Supabase 접속은 **service_role**(`store.client()`=`SUPABASE_SERVICE_KEY`, `_hub_client()`=허브 `.env.local`의 `SUPABASE_SERVICE_ROLE_KEY`). 둘 다 같은 프로젝트를 본다. RLS를 우회하므로 정책 없는 테이블에도 쓰기가 된다 — anon 키였다면 에러 없이 0행으로 조용히 실패했을 자리
+
 ## Gotchas
 - `slack_sdk.files_upload_v2`는 ok=true 응답해도 워크스페이스 정책으로 `channels=[]` (채널 attach 실패) 가능 → 메시지 본문에 원본 URL을 `attachments_raw`로 박는 우회책 사용 중
 - `import_excel.py`는 동일 사이트명을 카테고리 suffix로 자동 분리 (예: "성남시" → "성남시-건축"/"성남시-토목")

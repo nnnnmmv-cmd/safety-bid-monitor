@@ -5,12 +5,48 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import date, datetime
 from functools import lru_cache
 from typing import Any
 
 from supabase import Client, create_client
+
+from .utils import utc_now_iso
+
+logger: logging.Logger = logging.getLogger("safetybid.store")
+
+HEALTH_TABLE: str = "bid_collection_health"
+
+
+def log_site_health(
+    site_name: str,
+    reason: str,
+    posts_saved: int,
+    posts_fetched: int,
+    run_at: str | None = None,
+) -> bool:
+    """게시판 1회 방문 기록. 실패해도 예외를 올리지 않는다(수집을 막지 않음).
+
+    새 글이 0건이어도 남긴다 — 흔적이 없으면 게시판이 죽은 건지 원래 조용한 건지 구분이 안 된다.
+
+    reason: 정상이면 'ok', 아니면 실패 사유
+    posts_saved: 이번에 새로 저장한 글 수
+    posts_fetched: 목록에서 읽어낸 글 수. 0이면 조용한 게 아니라 게시판이 안 읽히는 것
+    """
+    try:
+        client().table(HEALTH_TABLE).insert({
+            "site_name": site_name,
+            "run_at": run_at or utc_now_iso(),
+            "reason": reason[:300],
+            "posts_saved": posts_saved,
+            "posts_fetched": posts_fetched,
+        }).execute()
+        return True
+    except Exception as exc:
+        logger.warning("[health] 기록 실패 (%s): %s", site_name, str(exc)[:120])
+        return False
 
 
 def _client_or_none() -> Client | None:
