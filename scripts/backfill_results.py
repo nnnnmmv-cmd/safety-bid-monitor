@@ -37,9 +37,25 @@ def _site_map() -> dict[str, SiteConfig]:
     return {r["name"]: _site_row_to_config(r) for r in store.list_sites()}
 
 
+# 통합 게시판으로 합치기 전 이름(안산시-건축/안산시-토목 등)으로 저장된 옛 공고가 있다.
+# 그 이름이 명부에서 사라져 detail 재조회가 통째로 막히므로, 정확 일치가 실패할 때만 떼고 찾는다.
+# 정확 일치 우선이 중요 — 용인시-건축/용인시-토목처럼 지금도 실제로 갈려 있는 곳이 있다.
+_LEGACY_SUFFIXES: tuple[str, ...] = ("-건축", "-토목")
+
+
+def _resolve_site(name: str, sites: dict[str, SiteConfig]) -> SiteConfig | None:
+    site = sites.get(name)
+    if site is not None:
+        return site
+    for suf in _LEGACY_SUFFIXES:
+        if name.endswith(suf):
+            return sites.get(name[: -len(suf)])
+    return None
+
+
 def _fresh_body(row: dict[str, Any], sites: dict[str, SiteConfig]) -> tuple[str, str]:
     """detail 재조회 + 첨부 텍스트. 반환 (본문, 출처설명)."""
-    site = sites.get(row.get("site_name") or "")
+    site = _resolve_site(row.get("site_name") or "", sites)
     url = row.get("url") or ""
     fallback = (row.get("body_excerpt") or "").strip()
     if not site or not url:
