@@ -331,6 +331,7 @@ class EgovAdapter(Adapter):
         for key in (
             "notAncmtMgtNo", "not_ancmt_mgt_no", "nttId", "ntt_id",
             "bbs_seq", "bbsSn", "sno", "gosiNttNo", "nttNo", "regiNo",
+            "q_nftcBbsMgtno",  # 광명시
             "no", "idx", "seq",
         ):
             m = re.search(rf"[?&]{key}=([0-9]+)", detail_url)
@@ -374,7 +375,14 @@ class EgovAdapter(Adapter):
             text = soup.get_text("\n", strip=True)
         deadline = self._find_deadline(text)
         price = parse_price(text)
-        attachments = self._extract_attachments(soup, detail_url)
+        # 첨부는 게시글 영역 안에서 먼저 찾는다 — 페이지 하단·사이드바에 붙은 사이트 공통 파일
+        # (조례 PDF, 안내 가이드라인 등)이 첨부로 딸려오는 것 방지 (광명시 사례: 4개 → 16개).
+        # 게시글 영역에서 하나도 못 찾으면 기존처럼 페이지 전체를 훑는다 (첨부가 본문 밖에 있는 사이트 대응).
+        attachments: list[Attachment] = []
+        if body_container is not None:
+            attachments = self._extract_attachments(body_container, detail_url)
+        if not attachments:
+            attachments = self._extract_attachments(soup, detail_url)
         return text[:8000], deadline, price, attachments
 
     _BODY_SELECTORS: tuple[str, ...] = (
@@ -387,6 +395,9 @@ class EgovAdapter(Adapter):
         "div.bbs-cont", "div.bbs_cont", "div.view-cont", "div.cont-view",
         # 인천광역시 조달청 — 본문이 td.tb_left에 들어있는 케이스
         "td.tb_left",
+        # 광명시 — 게시글 전체가 table.bbsView (본문 div.td_con + 첨부 ul#otherList 포함).
+        # td_con만 잡으면 첨부가 영역 밖이 되어 사이트 공통 파일까지 딸려온다.
+        "table.bbsView", "div.td_con",
     )
 
     def _find_body_container(self, soup: BeautifulSoup) -> Tag | None:
@@ -402,7 +413,7 @@ class EgovAdapter(Adapter):
                 return el
         return None
 
-    def _extract_attachments(self, soup: BeautifulSoup, detail_url: str) -> list[Attachment]:
+    def _extract_attachments(self, soup: BeautifulSoup | Tag, detail_url: str) -> list[Attachment]:
         """첨부파일 링크 추출. javascript 다운로드 함수 패턴 자동 처리."""
         results: list[Attachment] = []
         seen: set[str] = set()
