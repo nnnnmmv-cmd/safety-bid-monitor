@@ -117,6 +117,8 @@ class EgovAdapter(Adapter):
         max_pages = int(self.site.pagination.get("max_pages", 3))
         page_param = str(self.site.pagination.get("param", "pageIndex"))
         results: list[BidPosting] = []
+        self.rows_seen = 0
+        self.list_error = ""
 
         for page in range(1, max_pages + 1):
             params = dict(self.site.list_params)
@@ -125,9 +127,13 @@ class EgovAdapter(Adapter):
                 html = self._get(self.site.list_url, params=params)
             except RuntimeError as exc:
                 logger.warning("[%s] list fetch failed page=%d: %s", self.site.name, page, exc)
+                # 1페이지부터 실패면 게시판을 통째로 못 읽은 것 (2페이지 이후는 페이징 끝일 수 있다)
+                if page == 1:
+                    self.list_error = str(exc)
                 break
 
             rows = self._extract_rows(html)
+            self.rows_seen += len(rows)
             if not rows:
                 logger.info("[%s] no rows parsed on page %d", self.site.name, page)
                 break

@@ -70,6 +70,12 @@ class _LegacyHTTPSAdapter(HTTPAdapter):
 
 
 class Adapter(ABC):
+    # 헬스 기록용 — 목록에서 실제로 파싱한 행 수와 목록 요청 실패 사유.
+    # fetch()가 돌려주는 postings는 날짜 필터를 통과한 것만이라, 옛 글만 있는 조용한 게시판도 0이 된다.
+    # 그 0과 '목록이 안 읽힌 0'을 구분하려면 필터 이전 행 수가 필요하다.
+    rows_seen: int = 0
+    list_error: str = ""
+
     def __init__(self, site: SiteConfig, runtime: RuntimeConfig) -> None:
         self.site = site
         self.runtime = runtime

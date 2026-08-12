@@ -74,6 +74,36 @@ def _setup_logging() -> None:
 _LLM_AUTH_OK: bool = True
 
 
+# 헬스 기록의 reason — 허브가 사유별로 다르게 알리므로 값이 유한해야 한다.
+# 예외 원문을 그대로 넣으면 URL·타임아웃 초 등이 섞여 매번 다른 문자열이 되어 묶이지 않는다.
+_REASON_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("timed out", "timeout"),
+    ("timeout", "timeout"),
+    ("sslerror", "ssl_error"),
+    ("certificate", "ssl_error"),
+    ("connectionerror", "connection_error"),
+    ("connection aborted", "connection_error"),
+    ("name or service not known", "dns_error"),
+    ("nodename nor servname", "dns_error"),
+    # requests: "404 Client Error: Not Found for url: ..." / playwright: "HTTP 404 — URL 확인 필요"
+    ("client error", "http_error"),
+    ("server error", "http_error"),
+    ("http 4", "http_error"),
+    ("http 5", "http_error"),
+)
+
+
+def _health_reason(err: str) -> str:
+    """실패 원문 → 묶을 수 있는 짧은 코드. 자세한 내용은 monitor.log와 관리자 알림에 남는다."""
+    if not err:
+        return "ok"
+    low = err.lower()
+    for needle, code in _REASON_PATTERNS:
+        if needle in low:
+            return code
+    return "error"
+
+
 def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[int, int, str | None]:
     """returns (fetched, inserted, error_message). 한 사이트 실패가 전체 run을 망치지 않도록 전체를 격리."""
     try:
@@ -82,7 +112,9 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
         postings = adapter.fetch(since)
     except Exception as exc:
         logger.exception("[%s] adapter failed", site.name)
+        store.log_site_health(site.name, _health_reason(str(exc)), 0, 0)
         return 0, 0, f"{site.name} fetch: {exc}"
+
 
     inserted = 0
     fetched_at = utc_now_iso()
@@ -242,6 +274,11 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
         logger.info("[%s] fetched=%d inserted=%d insert_errors=%d", site.name, len(postings), inserted, insert_errors)
     else:
         logger.info("[%s] fetched=%d inserted=%d", site.name, len(postings), inserted)
+    # 방문 기록 — 새 글이 없어도 남긴다. posts_fetched는 날짜 필터 이전의 목록 행 수라
+    # '옛 글만 있는 조용한 게시판'(>0)과 '목록이 안 읽히는 게시판'(0)이 갈린다.
+    store.log_site_health(
+        site.name, _health_reason(adapter.list_error), inserted, adapter.rows_seen,
+    )
     return len(postings), inserted, None
 
 
@@ -290,8 +327,6 @@ def run_once() -> None:
         total_inserted += inserted
         if err:
             errors.append(err)
-        # 방문 기록은 새 글이 없어도 남긴다 — 없으면 죽은 게시판과 조용한 게시판을 구분할 수 없다
-        store.log_site_health(site.name, err or "ok", inserted, fetched)
 
     # 새 흐름: 각 사이트 INSERT 직후 즉시 발송하므로 여기 unnotified는 대부분 비어 있음.
     # 다만 이전 실행에서 발송 실패 등으로 남은 미발송이 있다면 첨부 없이 fallback 발송.
