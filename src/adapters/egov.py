@@ -24,6 +24,8 @@ _DEFAULT_ROW_SELECTORS: list[str] = [
     "table.tbl_board tbody tr",
     "table.bbs_default_list tbody tr",
     "table.p-table tbody tr",
+    # molit.go.kr 지방국토관리청 계열 — <tbody>가 없어서 'table tbody tr'로는 0행이 된다
+    "table.list_area tr",
     "table tbody tr",
     "table#boardList tr",
     "table.tb_basic tr",
