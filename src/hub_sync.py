@@ -237,6 +237,23 @@ def build_spec_docs(attachments: Any) -> list[dict[str, str]] | None:
     return docs or None
 
 
+# 면허·지역 제한 — 조달청 목록/보조 API엔 안 실리고 첨부 공고문 안에만 있는 값.
+# 허브는 NULL과 ''를 다르게 읽는다: NULL='아직 안 봤다'(나중에 다시 시도), ''='봤는데 제한 없음'.
+# 그래서 공고문을 읽지 않은 건 칸을 아예 안 보내야 한다 — 빈 문자열을 보내면 '확인 완료'로 굳는다.
+_LIMIT_KEYS: tuple[str, ...] = ("license_limit", "region_limit")
+
+
+def _limit_cols(extracted: dict[str, Any] | None) -> dict[str, str]:
+    """LLM 추출이 실제로 돌았을 때만 면허·지역 칸을 만든다. 안 돌았으면 빈 dict → 컬럼 미전송 → NULL 유지.
+
+    `extract_bid_fields`는 타임아웃·파싱 실패에도 전 필드가 빈 dict를 돌려준다. 그걸 그대로 믿으면
+    읽지도 않은 공고가 ''(=확인 완료)로 굳어 허브가 영영 다시 안 본다. 전 필드가 비었으면 실패로 본다.
+    """
+    if not extracted or not any(str(v or "").strip() for v in extracted.values()):
+        return {}
+    return {k: str(extracted.get(k) or "").strip() for k in _LIMIT_KEYS if k in extracted}
+
+
 def _relevance(record: dict[str, Any]) -> str:
     """크롤러 판정 신뢰도 → likely / maybe.
 
@@ -284,6 +301,8 @@ def build_row(
         "notified_at": notified_at,
         # 공고문 첨부 링크 — 허브 알림 줄의 📎공고문이 여기서 나온다
         "spec_docs": build_spec_docs(attachments),
+        # 공고문에서만 나오는 참가 조건. 안 읽었으면 키 자체가 없어 NULL로 남는다
+        **_limit_cols(extracted),
     }
 
 
@@ -345,6 +364,28 @@ def update_spec_docs(notice_id: str, docs: list[dict[str, str]] | None) -> bool:
     except Exception as exc:
         logger.warning("[hub] 첨부링크 갱신 실패 (%s): %s", notice_id[:40], exc)
         return False
+
+
+def update_limits(notice_id: str, extracted: dict[str, Any] | None) -> list[str]:
+    """면허·지역 제한을 **비어 있을 때만** 채운다. 채운 칸 이름 목록을 돌려준다.
+
+    이미 값이 있는 행은 건드리지 않는다 — 조달청 보조 API가 채운 값이 공고문 파싱보다 정확하다.
+    덮어쓰기 방지는 `.is_(칸, "null")` 필터로 DB에서 건다(읽고 나서 쓰는 사이의 경합도 막힌다).
+    """
+    filled: list[str] = []
+    for key, value in _limit_cols(extracted).items():
+        try:
+            res = (
+                _hub_client().table("arch_bid_notices").update({key: value})
+                .eq("source", SOURCE).eq("bid_ntce_no", notice_id).eq("bid_ntce_ord", ORD)
+                .is_(key, "null")
+                .execute()
+            )
+            if res.data:
+                filled.append(key)
+        except Exception as exc:
+            logger.warning("[hub] %s 갱신 실패 (%s): %s", key, notice_id[:40], exc)
+    return filled
 
 
 def update_reg_deadline(notice_id: str, deadline_iso: str | None) -> bool:
