@@ -39,6 +39,9 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, default=0, help="0=전량")
     ap.add_argument("--only-sooui", action="store_true", help="수의계약만")
+    ap.add_argument("--since", default="", metavar="YYYY-MM-DD",
+                    help="이 날짜 이후 추출된 done 행을 다시 뽑는다 "
+                         "(프롬프트를 고쳤을 때 그날 쓴 것만 되돌리는 용도)")
     args = ap.parse_args()
 
     client = _hub_client()
@@ -47,7 +50,7 @@ def main() -> int:
         q = (
             client.table("arch_bid_notices")
             .select("bid_ntce_no, bid_ntce_ord, title, spec_docs, requirements, "
-                    "extract_status, contract_method")
+                    "extract_status, contract_method, extracted_at")
             .eq("source", "g2b").range(off, off + 999).execute().data or []
         )
         rows += q
@@ -58,14 +61,22 @@ def main() -> int:
         rq = r.get("requirements") or {}
         return not rq.get("region") and not rq.get("licenses")
 
-    targets = [r for r in rows if r.get("spec_docs") and empty(r)]
+    if args.since:
+        # 프롬프트 교정 후 재추출 — 형식이 틀린 채로 쓰인 행만 정확히 겨냥한다
+        targets = [
+            r for r in rows
+            if r.get("spec_docs") and str(r.get("extracted_at") or "")[:10] >= args.since
+        ]
+    else:
+        targets = [r for r in rows if r.get("spec_docs") and empty(r)]
     if args.only_sooui:
         targets = [r for r in targets if "수의" in str(r.get("contract_method") or "")]
     total = len(targets)
     if args.limit:
         targets = targets[: args.limit]
 
-    print(f"g2b {len(rows)}건 / 첨부 있고 region·licenses 둘 다 빈 것 {total}건")
+    label = f"{args.since} 이후 추출분 재작업" if args.since else "첨부 있고 region·licenses 둘 다 빈 것"
+    print(f"g2b {len(rows)}건 / {label} {total}건")
     print(f"  이번 대상 {len(targets)}건 · 계약방식 {dict(Counter(str(r.get('contract_method')) for r in targets))}")
     if args.dry_run:
         for r in targets[:12]:
@@ -105,9 +116,11 @@ def main() -> int:
             _write_result(client, no, ord_, "done", reqs)
             r_, l_ = reqs.get("region"), reqs.get("licenses")
             reg += bool(r_); lic += bool(l_)
+            names = reqs.get("license_names") or []
             if not r_ and not l_:
                 misses.append(f"[요건 언급 없음] {title}")
-            print(f"  [{i}/{len(targets)}] ✅ 지역={str(r_ or '(없음)')[:34]} | 면허={len(l_ or [])}개")
+            print(f"  [{i}/{len(targets)}] ✅ 지역={str(r_ or '(없음)')[:30]} | "
+                  f"licenses(원문) {len(l_ or [])}개 · license_names {len(names)}개")
             print(f"        {title[:56]}")
         except Exception as exc:
             failed += 1

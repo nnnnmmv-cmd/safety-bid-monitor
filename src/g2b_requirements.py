@@ -37,11 +37,18 @@ SYSTEM_PROMPT: str = """너는 대한민국 공공 입찰 공고문에서 '참�
 - licenses는 배열, 나머지는 문자열 또는 null.
 - 설명 문장 없이 JSON만 출력한다.
 
-licenses·region 두 항목만 예외로, 원문 인용이 아니라 아래 형식으로 정규화한다
+- licenses는 **원문 문장 그대로** 둔다. 요약·정규화 금지.
+  허브 명부 판정이 이 문장에서 '명부'·'등록'을 찾아 읽는다 —
+  "부천시 건설공사 안전점검 수행기관 명부에 등록된 30개 기관",
+  "2026년도 조달청 안전점검 수행기관 통합명부…에 등록되어 있는" 같은 문장이 그대로 있어야 한다.
+  면허 이름만 추린 배열은 아래 license_names에 따로 담는다.
+
+license_names·region 두 항목은 원문 인용이 아니라 아래 형식으로 정규화한다
 (허브가 이 값을 화면 배지로 쓰기 때문에 문장을 통째로 넣으면 못 읽는다):
-- licenses: 근거 법조문·업종코드·"또는" 같은 연결어를 걷어내고 **면허 이름만 항목별로** 나눈다.
-  나쁜 예(문장 통째, 항목 1개): ["「시설물의 안전 및 유지관리에 관한 특별법」 제28조에 따른 [안전진단전문기관(건축분야)(1397)] 또는 [안전진단전문기관(종합분야)(4963)] 으로 입찰참가자격 등록한 업체"]
-  좋은 예(면허 단위): ["안전진단전문기관(건축분야)", "안전진단전문기관(종합분야)", "안전점검전문기관(건축분야)"]
+- license_names: licenses에 적힌 문장에서 근거 법조문·업종코드·"또는" 같은 연결어를 걷어내고
+  **면허 이름만 항목별로** 나눈 배열. licenses를 대체하는 게 아니라 별도로 함께 낸다.
+  예: ["안전진단전문기관(건축분야)", "안전진단전문기관(종합분야)", "안전점검전문기관(건축분야)"]
+  면허 요구가 없으면 빈 배열.
 - region: 참가 가능한 본점 소재지를 **"시·도 시·군" 형태로, 여러 곳이면 "·"로 이어** 쓴다.
   **반드시 시·군 단위까지 적을 것** — "경기도"만 쓰면 경기 전역으로 오해되어,
   실제로는 고양시 제한인 공고에 용인 본점 업체를 통과시키게 된다.
@@ -52,9 +59,11 @@ licenses·region 두 항목만 예외로, 원문 인용이 아니라 아래 형�
   제한 언급이 없으면 null.
 
 출력 형식:
-{"licenses":["요구 면허·등록 원문 그대로, 항목별"],"region":"본점 소재지 요건 원문 (없으면 null)","experience":"실적 요건 원문 (없으면 null)","engineer":"책임기술자 요건 원문 (없으면 null)","scoring":"낙찰자 결정·배점 방식 원문 요약 (없으면 null)","small_biz":"소기업·소상공인 등 기업규모 제한 원문 (없으면 null)"}"""
+{"licenses":["요구 면허·등록 원문 그대로, 항목별"],"license_names":["면허 이름만 정규화"],"region":"본점 소재지 요건 원문 (없으면 null)","experience":"실적 요건 원문 (없으면 null)","engineer":"책임기술자 요건 원문 (없으면 null)","scoring":"낙찰자 결정·배점 방식 원문 요약 (없으면 null)","small_biz":"소기업·소상공인 등 기업규모 제한 원문 (없으면 null)"}"""
 
-_FIELDS: tuple[str, ...] = ("licenses", "region", "experience", "engineer", "scoring", "small_biz")
+_FIELDS: tuple[str, ...] = ("licenses", "license_names", "region", "experience", "engineer", "scoring", "small_biz")
+# 배열로 저장해야 하는 칸 — LLM이 "['a','b']" 같은 문자열로 돌려주는 일이 있어 여기서 강제한다
+_LIST_FIELDS: frozenset[str] = frozenset({"licenses", "license_names"})
 
 
 def _hub_client():
@@ -129,17 +138,35 @@ def _call_llm(title: str, doc_text: str) -> dict[str, Any] | None:
         logger.warning("[g2b] JSON 파싱 실패. raw=%r", (content or "")[:160])
         return None
 
-    # 스키마 고정 — 없는 키는 null, licenses는 항상 배열
+    # 스키마 고정 — 없는 키는 null, 배열 칸은 항상 배열.
+    # license_names를 문자열로 흘리면 허브가 문자 하나씩 순회한다(실측: 61자를 61개 항목으로 셈).
     out: dict[str, Any] = {}
     for k in _FIELDS:
         v = parsed.get(k)
-        if k == "licenses":
+        if k in _LIST_FIELDS:
             if isinstance(v, str):
-                v = [v] if v.strip() else []
+                v = _as_list(v)
             out[k] = [str(x).strip() for x in v if str(x).strip()] if isinstance(v, list) else []
         else:
             out[k] = str(v).strip() if v not in (None, "", "null") else None
     return out
+
+
+def _as_list(value: str) -> list[str]:
+    """배열 칸에 문자열이 온 경우 복원. "['a','b']" 같은 리터럴이면 풀고, 아니면 한 항목으로 본다."""
+    text = value.strip()
+    if not text or text.lower() == "null":
+        return []
+    if text.startswith("[") and text.endswith("]"):
+        import ast
+
+        try:
+            parsed = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            return [text]
+        if isinstance(parsed, list):
+            return [str(x).strip() for x in parsed if str(x).strip()]
+    return [text]
 
 
 def _doc_text(doc: dict[str, Any], work: Path) -> str:
