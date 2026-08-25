@@ -121,6 +121,7 @@ class EgovAdapter(Adapter):
         results: list[BidPosting] = []
         self.rows_seen = 0
         self.list_error = ""
+        self.list_container_found = False
 
         for page in range(1, max_pages + 1):
             params = dict(self.site.list_params)
@@ -136,6 +137,8 @@ class EgovAdapter(Adapter):
 
             rows = self._extract_rows(html)
             self.rows_seen += len(rows)
+            if page == 1:
+                self.list_container_found = self._has_list_container(html)
             if not rows:
                 logger.info("[%s] no rows parsed on page %d", self.site.name, page)
                 break
@@ -154,6 +157,20 @@ class EgovAdapter(Adapter):
 
         logger.info("[%s] fetched %d postings", self.site.name, len(results))
         return results
+
+    def _has_list_container(self, html: str) -> bool:
+        """목록 표 자체가 페이지에 있는가 — 행이 0이어도 표가 있으면 '검색 결과 0건'이다.
+
+        행 selector에서 끝의 tr/li를 떼어 부모(table tbody, ul.board_list 등)를 찾는다.
+        군포시 실측: 검색 결과 0건이어도 `table tbody`는 존재하고 그 안이 비어 있다.
+        """
+        soup = BeautifulSoup(html, "lxml")
+        custom = self.site.selectors.get("row")
+        for sel in ([custom] if custom else _DEFAULT_ROW_SELECTORS):
+            parent = re.sub(r"\s+(tr|li)\s*$", "", sel or "").strip()
+            if parent and parent != sel and soup.select_one(parent) is not None:
+                return True
+        return False
 
     def _extract_rows(self, html: str) -> list[Tag]:
         soup = BeautifulSoup(html, "lxml")

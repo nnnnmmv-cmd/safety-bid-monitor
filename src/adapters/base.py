@@ -75,6 +75,9 @@ class Adapter(ABC):
     # 그 0과 '목록이 안 읽힌 0'을 구분하려면 필터 이전 행 수가 필요하다.
     rows_seen: int = 0
     list_error: str = ""
+    # 목록 컨테이너(table tbody 등)를 페이지에서 찾았는가.
+    # rows_seen=0일 때 '검색 결과가 0건'(컨테이너 있음)과 '목록을 못 읽음'(컨테이너 없음)을 가른다.
+    list_container_found: bool = False
 
     def __init__(self, site: SiteConfig, runtime: RuntimeConfig) -> None:
         self.site = site

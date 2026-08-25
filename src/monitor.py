@@ -93,19 +93,6 @@ _REASON_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 
-# list_url에 제목검색어를 박아 둔 게시판 — 서버가 걸러서 주므로 결과 0행이 정상일 수 있다.
-# 이런 곳의 0행을 'ok'로 남기면 '게시판이 안 읽힘'과 구분되지 않아 오탐 경고가 뜬다
-# (군포시-입찰공고: notAncmtSeCd=02 게시판에 제목에 '안전'이 든 글이 없어 매 사이클 0행).
-_SEARCH_PARAM_KEYS: tuple[str, ...] = (
-    "searchKrwd", "searchTxt", "searchWrd", "searchVal",
-    "q_sv", "q_sc", "q_searchVal", "q_searchKeyTy",
-)
-
-
-def _uses_title_search(site: SiteConfig) -> bool:
-    return any(k in (site.list_params or {}) for k in _SEARCH_PARAM_KEYS)
-
-
 def _health_reason(err: str) -> str:
     """실패 원문 → 묶을 수 있는 짧은 코드. 자세한 내용은 monitor.log와 관리자 알림에 남는다."""
     if not err:
@@ -290,9 +277,10 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
     # 방문 기록 — 새 글이 없어도 남긴다. posts_fetched는 날짜 필터 이전의 목록 행 수라
     # '옛 글만 있는 조용한 게시판'(>0)과 '목록이 안 읽히는 게시판'(0)이 갈린다.
     reason = _health_reason(adapter.list_error)
-    if reason == "ok" and adapter.rows_seen == 0 and _uses_title_search(site):
-        # 목록은 정상인데 제목검색에 걸린 글이 없는 것 — 죽은 게시판과 구분해야 한다
-        reason = "no_match"
+    if reason == "ok" and adapter.rows_seen == 0:
+        # 0행의 두 가지를 가른다. 표가 있으면 서버가 걸러 준 '검색 결과 0건'(정상),
+        # 표조차 없으면 목록을 못 읽은 것(장애). 사이트 설정이 아니라 응답 HTML로 판단한다.
+        reason = "no_match" if adapter.list_container_found else "no_rows"
     store.log_site_health(site.name, reason, inserted, adapter.rows_seen)
     return len(postings), inserted, None
 
