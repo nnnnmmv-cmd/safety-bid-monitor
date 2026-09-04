@@ -120,6 +120,9 @@ _PERIOD_DATE_RE = re.compile(r"(?:(\d{4})\s*[.\-/]\s*)?(\d{1,2})\s*[.\-/]\s*(\d{
 _PERIOD_TIME_RE = re.compile(r"(\d{1,2}):(\d{2})")
 # 마감 시각이 안 적힌 공고는 업무 종료 시각으로 본다 (00:00로 두면 하루 일찍 만료 처리됨)
 _DEFAULT_CLOSE_HOUR: int = 18
+# 공고문에 적힌 시각은 한국 벽시계다. parse_reg_deadline은 naive로 돌려주므로
+# 저장 직전에 이 시간대를 붙인다 — 안 붙이면 timestamptz가 UTC로 읽어 9시간 당겨진다.
+KST: timezone = timezone(timedelta(hours=9))
 
 
 def parse_reg_deadline(bid_period: str | None, posted_at: Any = None) -> datetime | None:
@@ -177,9 +180,14 @@ def parse_reg_deadline(bid_period: str | None, posted_at: Any = None) -> datetim
 
 
 def _reg_deadline(record: dict[str, Any], extracted: dict[str, Any] | None) -> str | None:
-    """extracted_fields.bid_period에서 실제 접수 마감을 뽑아 ISO 문자열로."""
+    """extracted_fields.bid_period에서 실제 접수 마감을 뽑아 ISO 문자열로.
+
+    파서가 돌려주는 건 공고문에 적힌 한국 벽시계(naive)다. 시간대를 안 붙이면
+    허브 timestamptz가 UTC로 읽어 마감이 9시간 당겨진다 —
+    실측: 같은 '18:00 마감'을 지자체는 18:00Z(111건), 나라장터는 09:00Z로 갖고 있었다.
+    """
     end = parse_reg_deadline((extracted or {}).get("bid_period"), record.get("posted_at"))
-    return end.isoformat() if end else None
+    return end.replace(tzinfo=KST).isoformat() if end else None
 
 
 # 링크 글자가 파일명이 아니라 버튼 문구인 게시판이 있다 (남양주시 '내려받기').

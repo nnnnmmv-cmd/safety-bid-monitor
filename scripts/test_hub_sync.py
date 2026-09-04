@@ -123,6 +123,10 @@ def main() -> int:
     row = hub_sync.build_row(rec2, extracted=ex2)
     check(row["reg_deadline_dt"].startswith("2026-08-31T18:00"), "접수기간 있으면 실제 마감 저장")
     check(hub_sync.build_row(rec2, extracted={})["reg_deadline_dt"] is None, "접수기간 없으면 null")
+    # 시간대를 안 붙이면 허브 timestamptz가 UTC로 읽어 마감이 9시간 당겨진다
+    check(row["reg_deadline_dt"].endswith("+09:00"), "KST 오프셋 부착 — 공고문 시각은 한국 벽시계")
+    utc = _dt.fromisoformat(row["reg_deadline_dt"]).astimezone(timezone.utc)
+    check((utc.hour, utc.minute) == (9, 0), "18:00 KST → 09:00Z (나라장터 저장값과 동일)")
 
     print("\n[10] 나라장터 중복 게시판은 허브에 안 넣는다 (수집·bids 저장은 유지)")
     check(hub_sync.should_skip_hub("광주시-입찰정보"), "광주시-입찰정보 → 생략 (g2b 행과 제목 완전일치 3건)")
