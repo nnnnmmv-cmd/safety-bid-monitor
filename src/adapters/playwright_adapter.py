@@ -11,6 +11,16 @@ from .egov import EgovAdapter
 
 logger: logging.Logger = logging.getLogger(__name__)
 
+# 쪽 번호 n인 링크를 눌러 본다. scoped면 쪽 넘김 영역(class/id에 'pag') 안의 링크만
+_CLICK_PAGE_JS: str = """([n, scoped]) => {
+    const links = [...document.querySelectorAll('a')].filter(a => a.textContent.trim() === String(n));
+    const pick = scoped ? links.find(a => a.closest('[class*="pag" i],[id*="pag" i]')) : links[0];
+    if (!pick) return false;
+    pick.click();
+    return true;
+}"""
+_PAGE_CHANGE_TIMEOUT_SEC: float = 15.0
+
 
 class PlaywrightAdapter(EgovAdapter):
     """EgovAdapter 상속 + _get만 Playwright(Chromium)로 override.
@@ -18,7 +28,11 @@ class PlaywrightAdapter(EgovAdapter):
     HTML 파싱·detail URL 추출·첨부 추출 등은 부모 클래스 로직 그대로 사용.
     """
 
-    def _get(self, url: str, params: dict[str, str] | None = None, retries: int = 3) -> str:
+    def _get_list_page(self, params: dict[str, str], click_page: int) -> str:
+        return self._get(self.site.list_url, params=params, click_page=click_page)
+
+    def _get(self, url: str, params: dict[str, str] | None = None, retries: int = 3, click_page: int = 0) -> str:
+        """click_page>0이면 1쪽을 띄운 뒤 그 쪽 링크를 누른 화면을 돌려준다 (pagination.mode=click)."""
         full_url = url
         if params:
             qs = "&".join(f"{k}={v}" for k, v in params.items() if v)
@@ -40,15 +54,15 @@ class PlaywrightAdapter(EgovAdapter):
         last_err: Exception | None = None
         for attempt in range(retries):
             try:
-                return self._render(full_url)
+                return self._render(full_url, click_page)
             except Exception as exc:
                 last_err = exc
                 logger.debug("[playwright] retry %d for %s: %s", attempt + 1, full_url[:80], exc)
                 time.sleep(2 ** attempt)
         raise RuntimeError(f"Playwright GET {full_url} failed after {retries} retries: {last_err}")
 
-    def _render(self, url: str) -> str:
-        """Chromium 한 번 띄워서 페이지 로드 → 렌더링된 HTML 반환."""
+    def _render(self, url: str, click_page: int = 0) -> str:
+        """Chromium 한 번 띄워서 페이지 로드 → 렌더링된 HTML 반환. 쪽 이동이 안 되면 빈 문자열."""
         # sync_playwright는 매 호출마다 새 인스턴스 — 한 사이트당 list page + N detail page 호출 시 N+1번
         # cron 1회당 사이트 ~3개(동적)뿐이라 부담 적음. 더 빠르게 만들려면 추후 인스턴스 재사용.
         from playwright.sync_api import sync_playwright
@@ -96,6 +110,9 @@ class PlaywrightAdapter(EgovAdapter):
                         except Exception as exc:
                             logger.warning("[pw-debug] 검색 입력 실패: %s", exc)
 
+                if click_page and not self._go_to_page(page, click_page):
+                    return ""
+
                 # 용인시(eminwon) — iframe form1 + searchDetail 분석해서 각 행에 data-action 박기
                 # → egov.py의 data-action 폴백 로직이 자동으로 detail URL을 채택
                 self._annotate_eminwon_detail_urls(page)
@@ -124,6 +141,49 @@ class PlaywrightAdapter(EgovAdapter):
                 return html
             finally:
                 browser.close()
+
+    def _list_titles(self, page) -> tuple[str, ...]:  # type: ignore[no-untyped-def]
+        """지금 화면(메인+iframe)의 목록 제목들 — 쪽이 바뀌었는지 보는 용도."""
+        parts: list[str] = []
+        for frame in page.frames:
+            try:
+                parts.append(frame.content())
+            except Exception:
+                continue
+        rows = self._extract_rows("\n".join(parts))
+        return tuple(self._extract_title_and_url(r)[0] for r in rows)
+
+    def _go_to_page(self, page, n: int) -> bool:  # type: ignore[no-untyped-def]
+        """쪽 링크 n을 누르고 목록이 바뀔 때까지(최대 15초) 기다린다. 실패하면 WARNING + False.
+
+        첫 글만 보지 않고 목록 제목 전체를 비교한다 — 상단 고정 공지는 쪽을 넘겨도 맨 위에 그대로 있다.
+        """
+        before = self._list_titles(page)
+        clicked = False
+        for scoped in (True, False):
+            for frame in page.frames:
+                try:
+                    if frame.evaluate(_CLICK_PAGE_JS, [n, scoped]):
+                        clicked = True
+                        break
+                except Exception:
+                    continue
+            if clicked:
+                break
+        if not clicked:
+            logger.warning("[%s] %d쪽 링크 없음 — 빈 쪽으로 처리", self.site.name, n)
+            return False
+        deadline = time.time() + _PAGE_CHANGE_TIMEOUT_SEC
+        last: tuple[str, ...] = ()
+        while time.time() < deadline:
+            page.wait_for_timeout(500)
+            now = self._list_titles(page)
+            # 바뀐 목록이 한 번 더 같게 보일 때까지 — 그리는 도중의 반쪽 목록을 잡지 않게 (의왕시 3쪽 8건 사례)
+            if now and now != before and now == last:
+                return True
+            last = now
+        logger.warning("[%s] %d쪽으로 안 바뀜(%.0f초) — 빈 쪽으로 처리", self.site.name, n, _PAGE_CHANGE_TIMEOUT_SEC)
+        return False
 
     def _annotate_eminwon_detail_urls(self, page) -> None:  # type: ignore[no-untyped-def]
         """eminwon iframe(form1+searchDetail) → 행마다 data-action 절대 detail URL 박기.

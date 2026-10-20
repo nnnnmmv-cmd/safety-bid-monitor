@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime
+from typing import Any
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup, Tag
@@ -112,51 +113,88 @@ def _convert_list_to_detail_url(list_url: str, list_params: dict[str, str], toke
     return ""
 
 
+def page_request(pagination: dict[str, Any], list_params: dict[str, str], page: int) -> tuple[dict[str, str], int]:
+    """쪽 번호 → (목록 요청 쿼리, 눌러야 할 쪽 링크 번호). 0이면 링크를 누르지 않는다.
+
+    pagination: sites.pagination. 새 키가 없으면 지금까지와 똑같이 {param: page}만 붙인다.
+        also: ["q_cp"] — 같은 쪽 번호를 다른 이름으로도 보낸다 (화성시)
+        mode: "click" — playwright 전용. 2쪽부터는 1쪽 요청 그대로 띄운 뒤 쪽 링크를 누른다
+    """
+    params = dict(list_params)
+    param = str(pagination.get("param", "pageIndex"))
+    if pagination.get("mode") == "click":
+        params[param] = "1"
+        return params, (page if page > 1 else 0)
+    params[param] = str(page)
+    for alias in pagination.get("also") or []:
+        params[str(alias)] = str(page)
+    return params, 0
+
+
 class EgovAdapter(Adapter):
     """eGovFrame 표준 게시판(BBSMSTR_XXX 패턴) 및 일반 테이블형 게시판 대응."""
 
     def fetch(self, since: datetime) -> list[BidPosting]:
         max_pages = int(self.site.pagination.get("max_pages", 3))
-        page_param = str(self.site.pagination.get("param", "pageIndex"))
         results: list[BidPosting] = []
         self.rows_seen = 0
         self.list_error = ""
         self.list_container_found = False
 
         for page in range(1, max_pages + 1):
-            params = dict(self.site.list_params)
-            params[page_param] = str(page)
-            try:
-                html = self._get(self.site.list_url, params=params)
-            except RuntimeError as exc:
-                logger.warning("[%s] list fetch failed page=%d: %s", self.site.name, page, exc)
-                # 1페이지부터 실패면 게시판을 통째로 못 읽은 것 (2페이지 이후는 페이징 끝일 수 있다)
-                if page == 1:
-                    self.list_error = str(exc)
-                break
-
-            rows = self._extract_rows(html)
-            self.rows_seen += len(rows)
-            if page == 1:
-                self.list_container_found = self._has_list_container(html)
-            if not rows:
-                logger.info("[%s] no rows parsed on page %d", self.site.name, page)
-                break
-
-            stop = False
-            for row in rows:
-                posting = self._row_to_posting(row, html)
-                if posting is None:
-                    continue
-                if posting.posted_at and posting.posted_at < since:
-                    stop = True
-                    continue
-                results.append(posting)
+            postings, stop = self._read_page(page, since)
+            results.extend(postings)
             if stop:
                 break
 
         logger.info("[%s] fetched %d postings", self.site.name, len(results))
         return results
+
+    def _read_page(self, page: int, since: datetime) -> tuple[list[BidPosting], bool]:
+        """한 쪽 읽기 → (글, 그만 읽을지). 2쪽부터의 실패는 WARNING만 남기고 앞 쪽 결과를 살린다."""
+        try:
+            return self._read_page_inner(page, since)
+        except Exception as exc:
+            if page == 1:
+                raise
+            logger.warning("[%s] page %d 처리 실패 — 앞 쪽까지만 씀: %s", self.site.name, page, exc)
+            return [], True
+
+    def _read_page_inner(self, page: int, since: datetime) -> tuple[list[BidPosting], bool]:
+        params, click_page = page_request(self.site.pagination, self.site.list_params, page)
+        try:
+            html = self._get_list_page(params, click_page)
+        except RuntimeError as exc:
+            logger.warning("[%s] list fetch failed page=%d: %s", self.site.name, page, exc)
+            # 1페이지부터 실패면 게시판을 통째로 못 읽은 것 (2페이지 이후는 페이징 끝일 수 있다)
+            if page == 1:
+                self.list_error = str(exc)
+            return [], True
+
+        rows = self._extract_rows(html)
+        self.rows_seen += len(rows)
+        if page == 1:
+            self.list_container_found = self._has_list_container(html)
+        if not rows:
+            logger.info("[%s] no rows parsed on page %d", self.site.name, page)
+            return [], True
+
+        postings: list[BidPosting] = []
+        stop = False
+        for row in rows:
+            posting = self._row_to_posting(row, html)
+            if posting is None:
+                continue
+            if posting.posted_at and posting.posted_at < since:
+                stop = True
+                continue
+            postings.append(posting)
+        return postings, stop
+
+    def _get_list_page(self, params: dict[str, str], click_page: int) -> str:
+        if click_page:
+            raise RuntimeError("pagination.mode=click은 playwright 어댑터 전용")
+        return self._get(self.site.list_url, params=params)
 
     def _has_list_container(self, html: str) -> bool:
         """목록 표 자체가 페이지에 있는가 — 행이 0이어도 표가 있으면 '검색 결과 0건'이다.
