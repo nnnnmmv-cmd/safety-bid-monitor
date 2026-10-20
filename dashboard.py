@@ -92,10 +92,6 @@ def read_sites() -> list[dict[str, Any]]:
     return store.list_sites()
 
 
-def write_sites(sites: list[dict[str, Any]]) -> None:
-    store.replace_all_sites(sites)
-
-
 def read_keywords() -> dict[str, list[str]]:
     kw = store.list_keywords()
     return {
@@ -346,14 +342,6 @@ def _to_date(value: Any) -> date | None:
         return None
 
 
-def _from_date(value: Any) -> str:
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, datetime):
-        return value.date().isoformat()
-    return str(value or "").strip()
-
-
 def _calc_period(start: str, end: str) -> str:
     s = _to_date(start)
     e = _to_date(end)
@@ -369,10 +357,10 @@ def _calc_period(start: str, end: str) -> str:
 
 def page_roster() -> None:
     st.header("📒 발주청 명부")
-    if user.role == "admin":
-        st.caption("회사가 관리하는 발주청 목록입니다. 컬럼은 드롭다운/날짜/텍스트로 입력할 수 있고 행 추가·삭제도 가능합니다. 변경 후 **저장** 버튼을 눌러야 반영됩니다.")
-    else:
-        st.caption(f"본인 카테고리({', '.join(user.categories)})에 해당하는 발주청만 표시됩니다. 편집 권한은 관리자에게 문의하세요.")
+    # 명부 칸은 2026-10-20부터 허브가 고친다 — 이 표는 보기 전용
+    st.info(store.REGISTRY_MOVED_MSG)
+    if user.role != "admin":
+        st.caption(f"본인 카테고리({', '.join(user.categories)})에 해당하는 발주청만 표시됩니다.")
 
     sites = read_sites()
     if user.role != "admin":
@@ -418,19 +406,17 @@ def page_roster() -> None:
 
     column_config = {
         "last_updated": st.column_config.DateColumn("업데이트", format="YYYY-MM-DD"),
-        "name": st.column_config.TextColumn("지자체명", required=True, width="medium"),
-        "is_arch": st.column_config.CheckboxColumn("건축", help="건축 분야 안전점검 글 수집·발송"),
-        "is_civil": st.column_config.CheckboxColumn("토목", help="토목 분야 안전점검 글 수집·발송"),
-        "homecheck": st.column_config.SelectboxColumn("홈체크", options=["", "O", "X"]),
-        "hansijin": st.column_config.SelectboxColumn("한시진", options=["", "O", "X"]),
-        "hanjugum": st.column_config.SelectboxColumn("한주검", options=["", "O", "X"]),
-        "bidding_status": st.column_config.SelectboxColumn(
-            "투찰진행", options=["", "진행", "불가", "보류"]
-        ),
+        "name": st.column_config.TextColumn("지자체명", width="medium"),
+        "is_arch": st.column_config.CheckboxColumn("건축"),
+        "is_civil": st.column_config.CheckboxColumn("토목"),
+        "homecheck": st.column_config.TextColumn("홈체크"),
+        "hansijin": st.column_config.TextColumn("한시진"),
+        "hanjugum": st.column_config.TextColumn("한주검"),
+        "bidding_status": st.column_config.TextColumn("투찰진행"),
         "new_submission_date": st.column_config.DateColumn("신규제출일", format="YYYY-MM-DD"),
         "period_start": st.column_config.DateColumn("시작일", format="YYYY-MM-DD"),
         "period_end": st.column_config.DateColumn("종료일", format="YYYY-MM-DD"),
-        "operating_period": st.column_config.TextColumn("운영기간", disabled=True, help="시작일/종료일로 자동 계산"),
+        "operating_period": st.column_config.TextColumn("운영기간", help="시작일/종료일로 자동 계산"),
         "announce_planned_date": st.column_config.DateColumn("공고예정일", format="YYYY-MM-DD"),
         "previous_announce_date": st.column_config.DateColumn("이전 공고일", format="YYYY-MM-DD"),
         "previous_deadline": st.column_config.DateColumn("이전 마감일", format="YYYY-MM-DD"),
@@ -442,112 +428,68 @@ def page_roster() -> None:
         "note": st.column_config.TextColumn("특이사항", width="large"),
         "region": st.column_config.TextColumn("지역", width="small"),
         "crawl_status": st.column_config.TextColumn(
-            "🔧", disabled=True, width="small",
+            "🔧", width="small",
             help="크롤링 URL 설정 여부 — ✓ 설정됨 / — 미설정. 아래 '크롤링 설정' 섹션에서 편집",
         ),
-        "enabled": st.column_config.CheckboxColumn("모니터링", help="체크 시 매시간 자동 수집"),
+        "enabled": st.column_config.CheckboxColumn("모니터링", help="아래 크롤링 설정에서 켜고 끕니다"),
     }
 
-    edited: pd.DataFrame = st.data_editor(
-        df,
-        column_config=column_config,
-        hide_index=True,
-        num_rows="dynamic" if user.role == "admin" else "fixed",
-        disabled=user.role != "admin",
-        use_container_width=True,
-        key="roster_editor",
-    )
+    st.dataframe(df, column_config=column_config, hide_index=True, use_container_width=True)
 
-    c1, c2, c3 = st.columns([1, 1, 3])
-    if user.role == "admin" and c1.button("💾 명부 저장", type="primary"):
-        existing_by_name = {s.get("name"): s for s in sites if s.get("name")}
-        new_sites: list[dict[str, Any]] = []
-        for _, row in edited.iterrows():
-            name = str(row.get("name") or "").strip()
-            if not name:
-                continue
-            base = dict(existing_by_name.get(name, {}))
-            base["name"] = name
-            base["enabled"] = bool(row.get("enabled"))
-            base["region"] = str(row.get("region") or "")
-            # 건축/토목 체크박스 → category 합성
-            arch_flag = bool(row.get("is_arch"))
-            civil_flag = bool(row.get("is_civil"))
-            if arch_flag and civil_flag:
-                base["category"] = "건축·토목"
-            elif arch_flag:
-                base["category"] = "건축"
-            elif civil_flag:
-                base["category"] = "토목"
-            else:
-                base["category"] = ""
-            base["last_updated"] = _from_date(row.get("last_updated"))
-            base["homecheck"] = str(row.get("homecheck") or "")
-            base["hansijin"] = str(row.get("hansijin") or "")
-            base["hanjugum"] = str(row.get("hanjugum") or "")
-            base["bidding_status"] = str(row.get("bidding_status") or "")
-            base["new_submission_date"] = _from_date(row.get("new_submission_date"))
-            base["period_start"] = _from_date(row.get("period_start"))
-            base["period_end"] = _from_date(row.get("period_end"))
-            base["announce_planned_date"] = _from_date(row.get("announce_planned_date"))
-            base["previous_announce_date"] = _from_date(row.get("previous_announce_date"))
-            base["previous_deadline"] = _from_date(row.get("previous_deadline"))
-            base["under_100m_winner_method"] = str(row.get("under_100m_winner_method") or "")
-            base["above_100m_winner_method"] = str(row.get("above_100m_winner_method") or "")
-            base["bid_submission_method"] = str(row.get("bid_submission_method") or "")
-            base["performance_proof"] = str(row.get("performance_proof") or "")
-            base["work_overlap_doc"] = str(row.get("work_overlap_doc") or "")
-            base["note"] = str(row.get("note") or "")
-            # 신규 행의 기본 크롤링 골격
-            base.setdefault("adapter", "egov")
-            base.setdefault("base_url", "")
-            base.setdefault("list_url", "")
-            base.setdefault("list_params", {})
-            base.setdefault("pagination", {})
-            new_sites.append(base)
-        write_sites(new_sites)
-        st.success(f"저장 완료 — {len(new_sites)}건 (모니터링 활성 {sum(1 for s in new_sites if s.get('enabled'))}건)")
-
-    if c2.button("🔄 다시 읽기"):
+    if st.button("🔄 다시 읽기"):
         st.rerun()
 
-    with st.expander("ℹ 사용 팁"):
-        st.markdown(
-            "- 새 행을 추가하려면 표 맨 아래의 **빈 행**에 직접 입력하세요. 행 삭제는 행 왼쪽 체크박스 선택 후 **휴지통** 아이콘.\n"
-            "- 자동 크롤링까지 원하면 저장 후 **아래 🔧 크롤링 설정** 섹션에서 해당 발주청을 선택해 URL과 게시판 ID를 입력하세요.\n"
-            "- `운영기간`은 시작일/종료일을 채우면 자동으로 계산됩니다.\n"
-            "- `🔧` 컬럼이 `✓`면 크롤링 URL이 설정된 상태, `—`면 미설정.\n"
-            "- `모니터링`이 체크되고 🔧이 `✓`인 사이트만 매시간 자동 수집됩니다."
-        )
-
-    # ===== 크롤링 설정 폼 (선택한 발주청 1개) =====
+    # ===== 크롤링 설정 폼 (선택한 발주청 1개) — 크롤러 칸만 고친다 =====
     st.divider()
     st.subheader("🔧 크롤링 설정")
-    st.caption("표에서 발주청을 추가·저장한 뒤, 여기서 그 발주청의 URL/게시판 ID를 설정하면 자동 수집 대상이 됩니다.")
-
-    site_names = [s["name"] for s in sites if s.get("name")]
-    if not site_names:
-        st.info("발주청을 먼저 표에 추가하고 **💾 명부 저장**을 누르세요.")
-        return
+    st.caption("게시판 주소·어댑터·모니터링 켜기만 여기서 고칩니다. 명부 칸은 허브에서.")
 
     if user.role != "admin":
         st.info("크롤링 설정 편집은 관리자만 가능합니다.")
         return
 
-    selected_name = st.selectbox("발주청 선택", site_names, key="crawl_target")
-    target = next((s for s in sites if s.get("name") == selected_name), None)
-    if target is None:
+    mode = st.radio("작업", ["기존 줄 고치기", "새 게시판 줄 추가"], horizontal=True, key="crawl_mode")
+    if mode == "새 게시판 줄 추가":
+        _render_crawl_form(None)
         return
 
-    with st.form(f"crawl_form_{selected_name}"):
+    site_names = [s["name"] for s in sites if s.get("name")]
+    if not site_names:
+        st.info("명부에 줄이 없습니다.")
+        return
+    selected_name = st.selectbox("발주청 선택", site_names, key="crawl_target")
+    _render_crawl_form(selected_name)
+
+
+def _render_crawl_form(selected_name: str | None) -> None:
+    """크롤링 설정 폼. selected_name=None이면 새 게시판 줄 추가."""
+    # 폼을 열 때마다 DB에서 그 줄을 다시 읽는다 (캐시 안 씀)
+    target: dict[str, Any] = {}
+    if selected_name is not None:
+        target = store.get_site_crawler_row(selected_name) or {}
+        if not target:
+            st.error(f"'{selected_name}' 줄을 DB에서 찾지 못했습니다. 다시 읽기를 누르세요.")
+            return
+    pag = target.get("pagination") or {}
+    sel = target.get("selectors") or {}
+
+    with st.form(f"crawl_form_{selected_name or '__new__'}"):
+        if selected_name is None:
+            new_name = st.text_input("지자체명 (게시판 이름)", placeholder="예: 오산시")
+        else:
+            st.text_input("지자체명", value=selected_name, disabled=True, help="이름은 허브 공고 판정의 열쇠라 여기서 못 바꿉니다")
+            new_name = selected_name
+
         c1, c2 = st.columns(2)
-        adapter_opts = ["egov", "eminwon"]
-        cur_adapter = target.get("adapter", "egov")
+        adapter_opts = ["egov", "eminwon", "playwright"]
+        cur_adapter = str(target.get("adapter") or "egov")
+        if cur_adapter not in adapter_opts:
+            adapter_opts.append(cur_adapter)
         adapter = c1.selectbox(
             "어댑터",
             adapter_opts,
-            index=adapter_opts.index(cur_adapter) if cur_adapter in adapter_opts else 0,
-            help="egov: 행정안전부 표준 게시판 (대다수). eminwon: 일부 시·도 자체 시스템.",
+            index=adapter_opts.index(cur_adapter),
+            help="egov: 행정안전부 표준 게시판 (대다수). eminwon: 일부 시·도 자체 시스템. playwright: JS로 그리는 게시판.",
         )
         bbs_id = c2.text_input(
             "bbsId (게시판 ID)",
@@ -567,18 +509,16 @@ def page_roster() -> None:
         )
 
         c1, c2 = st.columns(2)
-        page_param = c1.text_input(
-            "페이징 쿼리 키",
-            value=str((target.get("pagination") or {}).get("param", "pageIndex")),
-        )
+        # 기본값 pageIndex·3은 DB에 값이 아예 없을 때만 보인다
+        page_param = c1.text_input("페이징 쿼리 키", value=str(pag.get("param", "pageIndex")))
         max_pages = c2.number_input(
             "최대 페이지 수",
             min_value=1, max_value=20,
-            value=int((target.get("pagination") or {}).get("max_pages", 3)),
+            value=int(pag.get("max_pages", 3)),
         )
 
         with st.expander("고급 셀렉터 (표준 어댑터가 파싱 못 할 때만)"):
-            sel = target.get("selectors") or {}
+            st.caption("여기 없는 셀렉터(detail_url_template 등)는 그대로 둡니다.")
             sel_row = st.text_input("row 셀렉터", value=str(sel.get("row", "")), placeholder="table.board_list tbody tr")
             sel_title = st.text_input("title 셀렉터", value=str(sel.get("title", "")), placeholder="td.subject a")
             sel_date = st.text_input("date 셀렉터", value=str(sel.get("date", "")), placeholder="td.date")
@@ -592,44 +532,70 @@ def page_roster() -> None:
                 placeholder="menuId=200",
             )
 
+        enabled = st.checkbox("모니터링 (자동 수집)", value=bool(target.get("enabled")))
+
         submitted = st.form_submit_button("💾 크롤링 설정 저장", type="primary")
 
-    if submitted:
-        list_params: dict[str, str] = {}
-        for line in extra_text.splitlines():
-            line = line.strip()
-            if not line or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            list_params[k.strip()] = v.strip()
-        if bbs_id.strip():
-            list_params["bbsId"] = bbs_id.strip()
+    if not submitted:
+        return
 
-        pagination = {
-            "param": (page_param or "pageIndex").strip(),
-            "max_pages": int(max_pages),
-        }
+    list_params: dict[str, str] = {}
+    for line in extra_text.splitlines():
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        list_params[k.strip()] = v.strip()
+    if bbs_id.strip():
+        list_params["bbsId"] = bbs_id.strip()
 
-        selectors = {k: v for k, v in {
-            "row": sel_row.strip(),
-            "title": sel_title.strip(),
-            "date": sel_date.strip(),
-        }.items() if v}
+    form_values: dict[str, Any] = {
+        "adapter": adapter,
+        "base_url": base_url.strip().rstrip("/"),
+        "list_url": list_url.strip(),
+        "list_params": list_params,
+        "pagination": {"param": (page_param or "pageIndex").strip(), "max_pages": int(max_pages)},
+        "selectors": {"row": sel_row.strip(), "title": sel_title.strip(), "date": sel_date.strip()},
+        "enabled": enabled,
+    }
 
-        updated = dict(target)
-        updated["adapter"] = adapter
-        updated["base_url"] = base_url.strip().rstrip("/")
-        updated["list_url"] = list_url.strip()
-        updated["list_params"] = list_params
-        updated["pagination"] = pagination
-        if selectors:
-            updated["selectors"] = selectors
-        elif "selectors" in updated:
-            updated.pop("selectors")
+    name = (new_name or "").strip()
+    if not name:
+        st.error("지자체명을 입력하세요.")
+        return
 
-        store.upsert_sites([updated])
-        st.success(f"'{selected_name}' 크롤링 설정 저장 완료")
-        st.rerun()
+    # 저장 직전에 다시 읽는다 — 그 사이 허브가 고친 값 위에 바뀐 칸만 얹는다
+    fresh = store.get_site_crawler_row(name)
+    if selected_name is None:
+        if fresh is not None:
+            st.error("이미 있는 줄입니다 — 기존 줄 고치기로 크롤러 칸만 바꾸세요")
+            return
+        fresh = {}
+    elif fresh is None:
+        st.error(f"'{name}' 줄이 DB에서 사라졌습니다. 저장하지 않았습니다.")
+        return
+
+    payload = store.crawler_update_payload(fresh, form_values)
+    effective = {**fresh, **payload}
+    # 허브가 만든 명부 전용 줄이 실수로 켜지면 매일 수집 장애 알림이 난다
+    if effective.get("enabled") and not (effective.get("adapter") and (effective.get("list_url") or effective.get("base_url"))):
+        st.error("게시판 설정을 먼저 채우세요")
+        return
+
+    try:
+        if selected_name is None:
+            store.insert_board_site({"name": name, **payload})
+            st.success(f"'{name}' 게시판 줄 추가 완료")
+        elif not payload:
+            st.info("바뀐 칸이 없어 저장하지 않았습니다.")
+            return
+        else:
+            store.update_site_crawler_fields(name, payload)
+            st.success(f"'{name}' 크롤링 설정 저장 완료 — 바뀐 칸: {', '.join(payload)}")
+    except Exception as exc:
+        st.error(str(exc))
+        return
+    st.rerun()
 
 
 # ---------- 페이지: 키워드 ----------

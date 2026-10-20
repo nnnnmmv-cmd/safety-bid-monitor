@@ -10,6 +10,9 @@
 """
 from __future__ import annotations
 
+# 2026-10-20 막음 — sites 행을 통째로 upsert/삭제해 허브가 고친 명부 칸을 지운다. 우회 플래그 없음
+import sys; print("명부 정보(3사 O/X·유효기간·공고일·분류·비고·메모)는 허브에서 고칩니다: https://homecheck-sales-hub.vercel.app/arch/bids?tab=registry — 크롤러 설정은 대시보드 사이트 설정에서."); sys.exit(1)
+
 import argparse
 import os
 import sys

@@ -206,8 +206,23 @@ def list_sites() -> list[dict[str, Any]]:
     return list(res.data or [])
 
 
+REGISTRY_MOVED_MSG: str = (
+    "명부 정보(3사 O/X·유효기간·공고일·분류·비고·메모)는 허브에서 고칩니다: "
+    "https://homecheck-sales-hub.vercel.app/arch/bids?tab=registry — 크롤러 설정은 대시보드 사이트 설정에서."
+)
+
+# 대시보드 사이트 설정 폼이 바꿀 수 있는 칸. 명부 칸·memo·name은 허브 소유라 넣지 않는다
+CRAWLER_FIELDS: tuple[str, ...] = (
+    "adapter", "base_url", "list_url", "list_params", "pagination", "selectors", "enabled",
+)
+_CRAWLER_DICT_FIELDS: tuple[str, ...] = ("pagination", "selectors")
+_PAGINATION_DEFAULTS: dict[str, Any] = {"param": "pageIndex", "max_pages": 3}
+
+
+# 2026-10-20 막음 — 명부는 허브가 고치므로, 행 전체를 덮는 upsert는 허브 수정분(날짜·memo·pagination)을 지운다
 def upsert_sites(sites: list[dict[str, Any]]) -> None:
     """대시보드 표 일괄 저장. 이름(name)이 PK 역할."""
+    raise RuntimeError(REGISTRY_MOVED_MSG)
     if not sites:
         return
     payload = [_site_to_db(s) for s in sites if s.get("name")]
@@ -216,18 +231,100 @@ def upsert_sites(sites: list[dict[str, Any]]) -> None:
     client().table("sites").upsert(payload, on_conflict="name").execute()
 
 
+# 2026-10-20 막음 — 허브가 만든 명부 전용 줄까지 지울 수 있다
 def delete_site(name: str) -> None:
+    raise RuntimeError(REGISTRY_MOVED_MSG)
     client().table("sites").delete().eq("name", name).execute()
 
 
+# 2026-10-20 막음 — 대시보드 표에 없는 줄(허브가 만든 줄)을 지우고 나머지를 옛 값으로 덮는다
 def replace_all_sites(sites: list[dict[str, Any]]) -> None:
     """명부 페이지의 '저장' 동작 — 입력에 없는 항목은 삭제."""
+    raise RuntimeError(REGISTRY_MOVED_MSG)
     existing = {row["name"] for row in list_sites()}
     incoming = {s["name"] for s in sites if s.get("name")}
     to_delete = existing - incoming
     if to_delete:
         client().table("sites").delete().in_("name", list(to_delete)).execute()
     upsert_sites(sites)
+
+
+def get_site_crawler_row(name: str) -> dict[str, Any] | None:
+    """사이트 설정 폼용 — 캐시 없이 그 줄의 name+크롤러 칸만 DB에서 다시 읽는다."""
+    res = client().table("sites").select(",".join(("name",) + CRAWLER_FIELDS)).eq("name", name).execute()
+    rows = list(res.data or [])
+    return rows[0] if rows else None
+
+
+def _norm(field: str, value: Any) -> Any:
+    # 비교용 — None/''·{} 차이와 list_params 숫자/문자 차이는 같은 값으로 본다
+    if field == "enabled":
+        return bool(value)
+    if field == "list_params":
+        return {str(k): str(v) for k, v in (value or {}).items()}
+    if field in _CRAWLER_DICT_FIELDS:
+        return dict(value or {})
+    return str(value or "")
+
+
+def crawler_update_payload(db_row: dict[str, Any], form_values: dict[str, Any]) -> dict[str, Any]:
+    """DB 값과 달라진 크롤러 칸만 돌려준다. DB를 부르지 않는 순수 함수.
+
+    db_row: 저장 직전에 다시 읽은 DB 줄
+    form_values: 폼 입력값. pagination·selectors는 바꾼 키만 담아도 되고, DB dict 위에 덮어 쓴다
+        (화면 기본값 pageIndex·3은 DB에 값이 아예 없을 때만 깔린다)
+    """
+    payload: dict[str, Any] = {}
+    for field in CRAWLER_FIELDS:
+        if field not in form_values:
+            continue
+        new = form_values[field]
+        if field == "pagination":
+            new = {**(_PAGINATION_DEFAULTS if not db_row.get("pagination") else {}),
+                   **(db_row.get("pagination") or {}), **(new or {})}
+        elif field == "selectors":
+            # 빈 문자열 키는 '지운다'는 뜻
+            merged = {**(db_row.get("selectors") or {}), **(new or {})}
+            new = {k: v for k, v in merged.items() if v not in ("", None)}
+        if _norm(field, new) != _norm(field, db_row.get(field)):
+            payload[field] = new
+    return payload
+
+
+def update_site_crawler_fields(name: str, changes: dict[str, Any]) -> int:
+    """기존 줄의 크롤러 칸만 update. upsert/insert 대체 경로 없음. 바뀐 칸 수를 돌려준다."""
+    bad = set(changes) - set(CRAWLER_FIELDS)
+    if bad:
+        raise ValueError(f"크롤러 칸이 아닌 칸은 못 바꿉니다: {sorted(bad)}")
+    if not changes:
+        return 0
+    res = client().table("sites").update(changes).eq("name", name).execute()
+    if len(res.data or []) != 1:
+        raise RuntimeError(f"'{name}' 갱신 결과가 {len(res.data or [])}행 — 1행이어야 합니다. 이름을 확인하세요.")
+    return len(changes)
+
+
+class SiteExistsError(RuntimeError):
+    pass
+
+
+def insert_board_site(row: dict[str, Any]) -> None:
+    """새 게시판 줄 추가 — name+크롤러 칸만 insert. 이미 있으면 덮지 않고 멈춘다."""
+    name = str(row.get("name") or "").strip()
+    if not name:
+        raise ValueError("이름이 비었습니다.")
+    bad = set(row) - {"name", *CRAWLER_FIELDS}
+    if bad:
+        raise ValueError(f"크롤러 칸이 아닌 칸은 못 넣습니다: {sorted(bad)}")
+    msg = "이미 있는 줄입니다 — 기존 줄 고치기로 크롤러 칸만 바꾸세요"
+    if get_site_crawler_row(name) is not None:
+        raise SiteExistsError(msg)
+    try:
+        client().table("sites").insert({**row, "name": name}).execute()
+    except Exception as exc:
+        if "23505" in str(exc):
+            raise SiteExistsError(msg) from exc
+        raise
 
 
 # ============ keywords ============
