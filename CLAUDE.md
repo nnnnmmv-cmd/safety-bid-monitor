@@ -39,7 +39,7 @@
 - 크롤러 Supabase 접속은 **service_role**(`store.client()`=`SUPABASE_SERVICE_KEY`, `_hub_client()`=허브 `.env.local`의 `SUPABASE_SERVICE_ROLE_KEY`). 둘 다 같은 프로젝트를 본다. RLS를 우회하므로 정책 없는 테이블에도 쓰기가 된다 — anon 키였다면 에러 없이 0행으로 조용히 실패했을 자리
 
 ## Gotchas
-- **명부 칸(3사 O/X·날짜·category·note·memo 등)은 허브가 고친다** (2026-10-20). `store.upsert_sites`·`delete_site`·`replace_all_sites`와 `scripts/import_excel.py`·`migrate_to_supabase.py`는 일부러 막아 둠 — 풀지 말 것(행 통째 덮기라 허브 수정분이 지워진다). 대시보드 사이트 설정 폼은 `store.CRAWLER_FIELDS`만 `update_site_crawler_fields`/`insert_board_site`로 쓴다. 점검: `scripts/test_crawler_payload.py`
+- **명부 칸(3사 O/X·날짜·category·note·memo 등)은 허브가 고친다** (2026-10-20). `store.upsert_sites`·`delete_site`·`replace_all_sites`와 `scripts/import_excel.py`·`migrate_to_supabase.py`·`migrate_to_hub.py`는 일부러 막아 둠 — 풀지 말 것(행 통째 덮기라 허브 수정분이 지워진다). 대시보드 사이트 설정 폼은 `store.CRAWLER_FIELDS`만 `update_site_crawler_fields`/`insert_board_site`로 쓴다. 점검: `scripts/test_crawler_payload.py`
 - `slack_sdk.files_upload_v2`는 ok=true 응답해도 워크스페이스 정책으로 `channels=[]` (채널 attach 실패) 가능 → 메시지 본문에 원본 URL을 `attachments_raw`로 박는 우회책 사용 중
 - `import_excel.py`는 동일 사이트명을 카테고리 suffix로 자동 분리 (예: "성남시" → "성남시-건축"/"성남시-토목")
 - `notified=True` 박힌 글은 cron 재처리 안 함. 강제 재발송 시 DB row 삭제 or `send_one_test.py`
