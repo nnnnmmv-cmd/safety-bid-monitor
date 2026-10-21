@@ -10,9 +10,11 @@ from pathlib import Path
 
 from . import attachments as att_mod
 from . import hub_sync, store, summarizer
+from .adapters.base import BidPosting
 from .adapters.registry import build_adapter
 from .config import DATA_DIR, LOG_DIR, AppConfig, SiteConfig, load_config
 from .filter import match_keywords
+from .notice_id import TITLE_MARK, is_list_address, resolve_title_id
 from .notifier import (
     _classify_post_category,
     notify_error,
@@ -104,6 +106,30 @@ def _health_reason(err: str) -> str:
     return "error"
 
 
+def _resolve_notice_id(site: SiteConfig, posting: BidPosting, saved_now: dict[str, dict[str, str]]) -> None:
+    """제목 번호 글의 notice_id를 겹침 규칙(notice_id.resolve_title_id)으로 정한다.
+
+    DB 조회는 기본 번호·꼬리 번호 최대 2번. 실패하면 그 글만 기본 번호로 진행한다.
+    """
+    base_id = posting.notice_id
+    try:
+        posted = posting.posted_at.strftime("%Y-%m-%d") if posting.posted_at else ""
+        listed = is_list_address(posting.url or "", site.list_url, site.list_params,
+                                 str(site.pagination.get("param", "pageIndex")))
+        new_id, warn = resolve_title_id(
+            base_id, posting.title, posted, posting.url or "", listed,
+            lambda k: saved_now.get(k) or store.get_bid_brief(k),
+        )
+    except Exception as exc:
+        logger.warning("[%s] 제목 번호 판정 실패 — 기본 번호로 진행 (%s): %s", site.name, base_id[-40:], exc)
+        return
+    if warn:
+        logger.warning("[%s] %s (%s)", site.name, warn, posting.title[:40])
+    if new_id != base_id:
+        logger.info("[%s] 제목 번호 겹침 → 꼬리 번호: %s", site.name, new_id[-50:])
+    posting.notice_id = new_id
+
+
 def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[int, int, str | None]:
     """returns (fetched, inserted, error_message). 한 사이트 실패가 전체 run을 망치지 않도록 전체를 격리."""
     try:
@@ -119,6 +145,8 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
     inserted = 0
     fetched_at = utc_now_iso()
     insert_errors = 0
+    # 이번 회차에 저장한 제목 번호 글 — 앞 40자가 같은 새 글 둘이 같은 회차에 오면 둘째가 첫째와 부딪힌다
+    saved_now: dict[str, dict[str, str]] = {}
     for posting in postings:
         try:
             matched = match_keywords(posting, cfg.keywords)
@@ -135,6 +163,8 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
                         site.name, want_cat, post_cat, posting.title[:40],
                     )
                     continue
+            if TITLE_MARK in posting.notice_id:
+                _resolve_notice_id(site, posting, saved_now)
             record = {
                 "notice_id": posting.notice_id,
                 "site_name": posting.site_name,
@@ -152,6 +182,11 @@ def _process_site(cfg: AppConfig, site: SiteConfig, since: datetime) -> tuple[in
             }
             if store.insert_bid_if_new(record):
                 inserted += 1
+                if TITLE_MARK in record["notice_id"] and posting.posted_at:
+                    saved_now[record["notice_id"]] = {
+                        "posted_at": posting.posted_at.strftime("%Y-%m-%d"),
+                        "url": posting.url, "title": posting.title,
+                    }
                 # 1) 첨부파일 다운로드 + HWP→PDF 변환 (pyhwp + reportlab)
                 file_paths: list[Path] = []
                 attach_texts: list[str] = []

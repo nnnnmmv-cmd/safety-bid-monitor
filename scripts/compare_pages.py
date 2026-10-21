@@ -76,7 +76,7 @@ def side_main(root: str, row: dict[str, Any]) -> None:
                 continue
             d = ad._extract_date(r)
             rows.append({"id": ad._infer_notice_id(r, url, title), "title": title,
-                         "date": d.date().isoformat() if d else ""})
+                         "date": d.date().isoformat() if d else "", "url": url})
         if not rows:
             break
         pages.append(rows)
@@ -156,6 +156,76 @@ def title_collisions(name: str, after: dict[str, Any]) -> list[str]:
     return out
 
 
+def bids_check(name: str, after: dict[str, Any], bids: dict[str, dict[str, Any]],
+               kw: Any, since: str) -> tuple[list[list[str]], int]:
+    """제목 번호가 겹쳐 빠지는 글 — ① 1~3쪽 안에서 같은 번호인 다른 글 ② bids에 같은 번호가 있는데 게시일(10자)이 다른 글.
+    키워드(제목 기준)에 맞는 글만. 반환: (표 행들, 같은 날·같은 앞 40자·다른 전체 제목 쌍 수)"""
+    from src.adapters.base import BidPosting
+    from src.filter import match_keywords
+
+    def hit(r: dict[str, str]) -> bool:
+        return bool(match_keywords(BidPosting(notice_id="", site_name=name, title=r["title"], org="", posted_at=None,
+                                              deadline_at=None, url="", estimated_price=None, body="", raw_html=""), kw))
+    out: list[list[str]] = []
+    first: dict[str, dict[str, str]] = {}
+    same_day = 0
+    for p in after["pages"]:
+        for r in p:
+            if not r["id"].startswith("title="):
+                continue
+            full = f"{name}::{r['id']}"
+            prev = first.setdefault(r["id"], r)
+            kind = ""
+            if prev is not r and (prev["title"], prev["date"]) != (r["title"], r["date"]):
+                kind = "①목록 안 겹침"
+                if prev["date"] == r["date"] and prev["title"] != r["title"]:
+                    same_day += 1
+            db = bids.get(full)
+            if db and r["date"] and str(db["posted_at"])[:10] != r["date"]:
+                kind = (kind + " " if kind else "") + f"②bids {str(db['posted_at'])[:10]}"
+            if kind and hit(r):
+                out.append([name, r["title"], r["date"] or "-", r["url"], full,
+                            "창 안" if r["date"] and r["date"] >= since else "창 밖", kind])
+    return out, same_day
+
+
+def id_check(name: str, row: dict[str, Any], after: dict[str, Any], bids: dict[str, dict[str, Any]],
+             kw: Any, since: str) -> tuple[int, list[str], list[list[str]]]:
+    """새 판정(notice_id.resolve_title_id) 드라이런 — DB 대신 bids 파일 + 이번 회차 저장분으로 본다.
+    반환: (기존 글 대상 수, 번호가 바뀐 기존 글, 새로 저장될 글 행)"""
+    from src.adapters.base import BidPosting
+    from src.filter import match_keywords
+    from src.notice_id import is_list_address, resolve_title_id
+
+    lp = row.get("list_params") or {}
+    pp = str((row.get("pagination") or {}).get("param", "pageIndex"))
+    saved: dict[str, dict[str, Any]] = {}
+    targets, changed, new_rows = 0, [], []
+    for p in after["pages"]:
+        for r in p:
+            if not r["id"].startswith("title=") or not r["date"]:
+                continue
+            base = f"{name}::{r['id']}"
+            listed = is_list_address(r["url"], row["list_url"], lp, pp)
+            new_id, warn = resolve_title_id(base, r["title"], r["date"], r["url"], listed,
+                                            lambda k: saved.get(k) or bids.get(k))
+            db = bids.get(base)
+            if db and (str(db["posted_at"])[:10] == r["date"] or (db.get("url") == r["url"] and not listed)):
+                targets += 1  # 이미 저장된 바로 그 글
+                if new_id != base:
+                    changed.append(f"{base} → {new_id}")
+                continue
+            hit = match_keywords(BidPosting(notice_id="", site_name=name, title=r["title"], org="", posted_at=None,
+                                            deadline_at=None, url="", estimated_price=None, body="", raw_html=""), kw)
+            if hit and new_id not in bids and new_id not in saved:
+                same_url = [k for k, v in bids.items() if v.get("url") == r["url"] and not listed]
+                new_rows.append([name, r["title"], r["date"], r["url"], new_id,
+                                 "창 안" if r["date"] >= since else "창 밖",
+                                 ("같은 URL 기존 행: " + ",".join(same_url)) if same_url else "", warn])
+                saved[new_id] = {"title": r["title"], "posted_at": r["date"], "url": r["url"]}
+    return targets, changed, new_rows
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--side")
@@ -164,6 +234,8 @@ def main() -> None:
     ap.add_argument("--before")
     ap.add_argument("--after")
     ap.add_argument("--only", default="")
+    ap.add_argument("--bids", help="bids title= 번호 JSON — 주면 'bids 대조' 열을 붙인다")
+    ap.add_argument("--keywords", help="keywords JSON (include/exclude/match_in)")
     a = ap.parse_args()
     if a.side:
         side_main(a.side, json.loads(a.row))
@@ -178,8 +250,27 @@ def main() -> None:
 
     counts: dict[str, int] = {}
     collisions: list[str] = []
+    bids: dict[str, dict[str, Any]] = {}
+    kw = None
+    missing: list[list[str]] = []
+    same_day_total = 0
+    id_targets = 0
+    id_changed: list[str] = []
+    id_new: list[list[str]] = []
+    seen_ids: set[str] = set()
+    if a.bids:
+        sys.path.insert(0, after_root)
+        from datetime import datetime, timedelta
+        from src.config import KeywordConfig
+        bids = {r["notice_id"]: r for r in json.load(open(os.path.expanduser(a.bids), encoding="utf-8"))}
+        k = json.load(open(os.path.expanduser(a.keywords), encoding="utf-8"))
+        kw = KeywordConfig(include=k.get("include", []), exclude=k.get("exclude", []),
+                           require_match_in=k.get("match_in") or ["title", "body"])
+        lookback = int(os.getenv("LOOKBACK_HOURS", "720"))
+        since = (datetime.now() - timedelta(hours=lookback)).strftime("%Y-%m-%d")
     printed_code = False
-    print("이름 | 구분 | 전 쪽별 글 수 | 후 쪽별 글 수 | 서로 다른 글 전→후 | 시간(초) 전→후 | 판정 | 비고")
+    print("이름 | 구분 | 전 쪽별 글 수 | 후 쪽별 글 수 | 서로 다른 글 전→후 | 시간(초) 전→후 | 판정 | "
+          + ("bids 대조 | " if a.bids else "") + "비고")
     for row in rows:
         name = row["name"]
         new_row = apply_proposed(row)
@@ -207,15 +298,47 @@ def main() -> None:
             note = f"1차 차이: 전 {len(b_ids)} / 후 {len(a_ids)}"
         counts[verdict] = counts.get(verdict, 0) + 1
         collisions += title_collisions(name, after)
+        check = ""
+        if a.bids:
+            rows_m, sd = bids_check(name, after, bids, kw, since)
+            missing += rows_m
+            same_day_total += sd
+            t, ch, nr = id_check(name, new_row, after, bids, kw, since)
+            id_targets += t
+            id_changed += ch
+            id_new += nr
+            seen_ids.update(f"{name}::{r['id']}" for p in after["pages"] for r in p)
+            check = f"{len(rows_m)} | "
         bp = "+".join(str(len(p)) for p in before["pages"]) or "0"
         apg = "+".join(str(len(p)) for p in after["pages"]) or "0"
         err = f" [오류 전:{before['err']} 후:{after['err']}]" if (before["err"] or after["err"]) and verdict != "양쪽 실패" else ""
-        print(f"{name} | {kind} | {bp} | {apg} | {len(b_ids)}→{len(a_ids)} | {before['sec']}→{after['sec']} | {verdict} | {note}{err}", flush=True)
+        print(f"{name} | {kind} | {bp} | {apg} | {len(b_ids)}→{len(a_ids)} | {before['sec']}→{after['sec']} | {verdict} | {check}{note}{err}", flush=True)
         time.sleep(1)
     print("집계:", counts)
     print("② 제목 notice_id 겹침 (후, 1~3쪽):")
     for c in collisions or ["(없음)"]:
         print("  " + c)
+    if a.bids:
+        print(f"③ 제목 번호 때문에 빠지는 글 (키워드 맞는 것, 수집 창 시작 {since}):")
+        print("  사이트 | 전체 제목 | 게시일 | 상세 URL | 기본 번호 | 수집 창 | 구분")
+        for m in missing or [["(없음)"]]:
+            print("  " + " | ".join(m))
+        print(f"  같은 날·같은 앞 40자·다른 전체 제목 쌍(목록 안, 키워드 무관): {same_day_total}")
+        print("④ 새 번호 판정 드라이런 (bids 파일 대조, DB 쓰기 없음):")
+        print(f"  기존 title= 글 중 목록에 보이는 대상 {id_targets}건 — 번호 바뀌는 글 {len(id_changed)}건")
+        for c in id_changed:
+            print("    바뀜: " + c)
+        print(f"  확인 불가(목록에 안 보이는 옛 행) {len([k for k in bids if k not in seen_ids])}건 / bids 파일 {len(bids)}건")
+        tails = [r for r in id_new if "@" in r[4].split("::title=", 1)[1]]
+        plain = [r for r in id_new if r not in tails]
+        t_in = [r for r in tails if r[5] == "창 안"]
+        print(f"  새 규칙 때문에 새로 저장될 글(꼬리 번호, 키워드 맞음): 창 안 {len(t_in)}건 / 창 밖 {len(tails) - len(t_in)}건 (창 밖은 날짜 필터로 수집 안 됨)")
+        for r in tails:
+            print("    " + " | ".join(x for x in r if x))
+        p_in = [r for r in plain if r[5] == "창 안"]
+        print(f"  참고 — bids에 없는 기본 번호 글(지금 코드도 똑같이 저장): 창 안 {len(p_in)}건 / 창 밖 {len(plain) - len(p_in)}건")
+        for r in plain:
+            print("    " + " | ".join(x for x in r if x))
 
 
 if __name__ == "__main__":
