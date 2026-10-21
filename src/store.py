@@ -84,6 +84,12 @@ def _iso(value: Any) -> str | None:
     return str(value)
 
 
+def get_bid_brief(notice_id: str) -> dict[str, Any] | None:
+    """제목 번호 겹침 판정용 — 그 번호 행의 게시일·주소·제목만."""
+    res = client().table("bids").select("notice_id,title,posted_at,url").eq("notice_id", notice_id).limit(1).execute()
+    return res.data[0] if res.data else None
+
+
 def insert_bid_if_new(posting: dict[str, Any]) -> bool:
     """SELECT 후 신규일 때만 INSERT. 신규면 True."""
     notice_id = posting["notice_id"]
